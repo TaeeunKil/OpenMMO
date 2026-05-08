@@ -24,7 +24,7 @@ pub mod bridges;
 mod constants;
 mod context;
 mod heightmap;
-mod rivers_bin;
+mod river_field;
 pub mod settlement_flatten;
 mod splatmap;
 
@@ -39,10 +39,7 @@ pub use constants::{
 };
 pub use context::BakeContext;
 use context::MouthIsland;
-pub use rivers_bin::{
-    bake_rivers_binary, bucket_river_segments_by_owner, RiverSegmentBuckets, RIVER_BIN_HEADER_SIZE,
-    RIVER_BIN_MAGIC, RIVER_BIN_SEGMENT_SIZE, RIVER_BIN_VERSION,
-};
+pub use river_field::bake_river_field;
 
 use constants::{
     COAST_FADE_SPAN_M, COAST_SAND_M, RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M,
@@ -57,6 +54,10 @@ pub struct BakedTile {
     pub heightmap: Vec<u8>,
     /// Row-major V2 splatmap, 64×64 × 4 bytes.
     pub splatmap: Vec<u8>,
+    /// Per-tile RFD1 river field (surfaceY + flowDir, 65×65). `None`
+    /// when the tile sees no river segment within the bake margin —
+    /// runtime treats missing as "no river quad in this tile".
+    pub river_field: Option<Vec<u8>>,
 }
 
 /// Bake one tile at signed tile coordinate (tx, tz).
@@ -157,6 +158,7 @@ pub fn bake_tile_with_bridges(
     if !bridge_flattens.is_empty() {
         bridges::apply_bridge_flatten(&mut heights, tile_min_x, tile_min_z, bridge_flattens);
     }
+    let river_field = bake_river_field(map, ctx, &heights, tile_min_x, tile_min_z, &river_segs);
     let heightmap = encode_heightmap(&heights);
     let splatmap = bake_splatmap(
         map,
@@ -171,6 +173,7 @@ pub fn bake_tile_with_bridges(
     BakedTile {
         heightmap,
         splatmap,
+        river_field,
     }
 }
 

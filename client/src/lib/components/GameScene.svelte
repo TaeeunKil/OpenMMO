@@ -89,7 +89,7 @@
   import { TerrainSplatManager } from '../managers/terrainSplatManager'
   import { TerrainGrassDataManager } from '../managers/terrainGrassDataManager'
   import { TerrainTreeDataManager } from '../managers/terrainTreeDataManager'
-  import { RiverDataManager } from '../managers/riverDataManager'
+  import { RiverFieldManager } from '../managers/riverFieldManager'
   import { loadSplatLayers } from '../utils/splatLayerLoader'
   import { initHousingTextures } from '../utils/housing-textures'
   import {
@@ -129,7 +129,7 @@
   const terrainSplatManager = new TerrainSplatManager()
   const terrainGrassDataManager = new TerrainGrassDataManager(terrainHeightManager)
   const terrainTreeDataManager = new TerrainTreeDataManager(terrainHeightManager)
-  const riverDataManager = new RiverDataManager()
+  const riverFieldManager = new RiverFieldManager()
   monsterManager.heightManager = terrainHeightManager
   editorHeightManager.set(terrainHeightManager)
   editorSplatManager.set(terrainSplatManager)
@@ -575,8 +575,6 @@
         if (windState) windParticlesRef?.update(deltaTime, camera, windState, grassCount)
         loopProfiler.record('windParticles', performance.now() - windStart)
       }
-
-      riverLayerRef?.update(deltaTime, camera)
 
       // Update camera with preserved offset
       const cameraUpdateStart = performance.now()
@@ -1069,7 +1067,7 @@
   bind:this={riverLayerRef}
   {terrainTiles}
   heightManager={terrainHeightManager}
-  {riverDataManager}
+  {riverFieldManager}
   normalMap={waterNormalMap}
   reflectionMap={reflectionTexture}
   refractionMap={refractionTexture}
@@ -1079,7 +1077,6 @@
   cameraDirection={waterCamDir}
   moonBrightness={waterMoonBrightness}
   torchLight={waterTorchLight}
-  playerPosition={currentPlayer?.position ?? null}
 />
 
 <T is={entityClipGroupObj} bind:ref={entityClipGroup}>

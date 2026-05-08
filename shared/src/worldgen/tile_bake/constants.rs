@@ -76,6 +76,13 @@ pub(super) const RIVER_CARVE_DEPTH_EXTRA_M: f32 = 1.4;
 /// a visible bank gradient instead of stamping a uniform-opaque slab.
 /// See RIVER_SYSTEM.md §10.
 pub(super) const RIVER_CARVE_MIN_BED_Y_M: f32 = -0.1;
+/// River water surface offset above the carved bed (m). The bake fills a
+/// per-tile field with `surfaceY = bed + RIVER_DEPTH_OFFSET_M` along each
+/// segment so the runtime shader can compute `depth = surfaceY − bedY`
+/// directly from texture lookups, with no polyline dependence at draw
+/// time. Must agree with the runtime's expected channel depth — set just
+/// large enough to give the depth-fade headroom past the 0.05 m hard cut.
+pub(super) const RIVER_DEPTH_OFFSET_M: f32 = 0.5;
 /// River-bed splat switches from `PAL_RIVER_BED` (ganges pebbles — wet
 /// inland bed look) to `PAL_SAND` (sandy_gravel_02 — matches coast) where
 /// the cell is within this horizontal distance of the ocean coast

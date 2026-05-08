@@ -180,7 +180,6 @@ pub struct WorldGenConfig {
     // simulation.py. Terrain is internally normalized to [0, 1] (= [0,
     // max_elevation_m]) before the sim runs; constants below are in those
     // unit-less terms, identical to dandrino's defaults.
-
     /// Resolution at which the erosion sim runs (cells per side). The
     /// pipeline's `global_res` is downsampled to this, the sim runs, and
     /// the result is upsampled back. 0 = use `global_res` directly. Typical:

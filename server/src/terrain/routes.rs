@@ -56,7 +56,7 @@ pub fn terrain_router(terrain_io: Arc<TerrainIO>) -> Router {
                 .put(put_trees)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
-        .route("/api/terrain/rivers/{x}/{z}", get(get_rivers))
+        .route("/api/terrain/river-field/{x}/{z}", get(get_river_field))
         .route(
             "/api/terrain/objects/{rx}/{rz}",
             get(get_object).put(put_object),
@@ -373,12 +373,12 @@ async fn put_trees(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_rivers(
+async fn get_river_field(
     Path((x, z)): Path<(i32, i32)>,
     State(terrain): State<Arc<TerrainIO>>,
 ) -> Result<Response, StatusCode> {
-    let data = terrain.read_rivers(x, z).await.map_err(|e| {
-        error!("Failed to read rivers ({}, {}): {}", x, z, e);
+    let data = terrain.read_river_field(x, z).await.map_err(|e| {
+        error!("Failed to read river field ({}, {}): {}", x, z, e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     match data {

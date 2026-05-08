@@ -79,8 +79,13 @@ pub fn erode_hydraulic(map: &mut GlobalMap) {
     // pre-erosion dynamic range even when the sim shaved the global max.
     let pre_max = land_peak_m(&map.elevation_m, &map.land_mask);
 
-    let (mut terrain, sim_land) =
-        downsample(&map.elevation_m, &map.land_mask, global_res, sim_res, max_elev);
+    let (mut terrain, sim_land) = downsample(
+        &map.elevation_m,
+        &map.land_mask,
+        global_res,
+        sim_res,
+        max_elev,
+    );
 
     run_simulation(&mut terrain, &sim_land, sim_res, &cfg, iterations);
 
@@ -169,9 +174,7 @@ fn apply_coast_beach_ramp(map: &mut GlobalMap) {
     }
     let beach_max = cfg.coast_beach_max_height_m.max(0.0);
     let cliff_frac = cfg.coast_cliff_fraction.clamp(0.0, 1.0);
-    let cliff_wl = cfg
-        .scaled_cells(cfg.coast_cliff_wavelength_cells)
-        .max(1.0);
+    let cliff_wl = cfg.scaled_cells(cfg.coast_cliff_wavelength_cells).max(1.0);
     let cliff_freq = 1.0 / cliff_wl;
     let cliff_thr = 1.0 - cliff_frac;
 
@@ -688,11 +691,7 @@ fn upsample_into_elevation(
 ) {
     // Renormalize sim peak to the pre-erosion peak in meters so the world
     // doesn't shrink to a pancake when the sim shaved the absolute max.
-    let post_max = sim_terrain
-        .iter()
-        .copied()
-        .fold(0.0f32, f32::max)
-        .max(1e-6);
+    let post_max = sim_terrain.iter().copied().fold(0.0f32, f32::max).max(1e-6);
     let meter_scale = pre_max / post_max;
     let scale = sim_res as f32 / dst_res as f32;
     for dy in 0..dst_res {

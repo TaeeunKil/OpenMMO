@@ -194,12 +194,12 @@ impl TerrainIO {
         fs::write(&path, data).await
     }
 
-    /// Read per-tile river-segment data (variable-length binary, format
-    /// `RIV1` documented in `shared/src/worldgen/tile_bake.rs`). Returns
-    /// None for tiles with no baked rivers — the offline baker only writes
-    /// files for tiles that own at least one segment.
-    pub async fn read_rivers(&self, tx: i32, tz: i32) -> std::io::Result<Option<Vec<u8>>> {
-        let path = coords::river_path(&self.base_dir, tx, tz);
+    /// Read per-tile river-field data (pixel-aligned surfaceY + flowDir,
+    /// format `RFD1` — see `shared/src/worldgen/tile_bake/river_field.rs`).
+    /// Returns None when the offline baker did not produce a file for this
+    /// tile (no nearby river segments in the tile's filter window).
+    pub async fn read_river_field(&self, tx: i32, tz: i32) -> std::io::Result<Option<Vec<u8>>> {
+        let path = coords::river_field_path(&self.base_dir, tx, tz);
         match fs::read(&path).await {
             Ok(data) => Ok(Some(data)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

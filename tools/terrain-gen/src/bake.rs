@@ -156,7 +156,6 @@ pub fn run(
     let t = Instant::now();
     let coast_polys = coasts::extract_coasts(&map.land_mask, map.config.global_res as usize);
     let ctx = tile_bake::BakeContext::new(&map, &river_map, &road_net, &coast_polys);
-    let river_buckets = tile_bake::bucket_river_segments_by_owner(&ctx);
     eprintln!(
         "  Phase 7 prep:        {:.2}s  ({} coast polylines + river/road fields)",
         t.elapsed().as_secs_f32(),
@@ -216,8 +215,8 @@ pub fn run(
         .with_context(|| format!("create {}/trees", out.display()))?;
     std::fs::create_dir_all(out.join("grass"))
         .with_context(|| format!("create {}/grass", out.display()))?;
-    std::fs::create_dir_all(out.join("rivers"))
-        .with_context(|| format!("create {}/rivers", out.display()))?;
+    std::fs::create_dir_all(out.join("river-field"))
+        .with_context(|| format!("create {}/river-field", out.display()))?;
     std::fs::create_dir_all(out.join("minimap"))
         .with_context(|| format!("create {}/minimap", out.display()))?;
     std::fs::create_dir_all(out.join("objects"))
@@ -229,7 +228,7 @@ pub fn run(
             std::fs::create_dir_all(coords::splat_region_dir(out, rx, rz))?;
             std::fs::create_dir_all(coords::tree_region_dir(out, rx, rz))?;
             std::fs::create_dir_all(coords::grass_region_dir(out, rx, rz))?;
-            std::fs::create_dir_all(coords::river_region_dir(out, rx, rz))?;
+            std::fs::create_dir_all(coords::river_field_region_dir(out, rx, rz))?;
         }
     }
 
@@ -298,27 +297,19 @@ pub fn run(
             std::fs::write(&gpath, &grass_bin)
                 .with_context(|| format!("write {}", gpath.display()))?;
 
-            // River segment file. Conditionally written so ocean / inland
-            // tiles without rivers stay zero-footprint (missing file = no
-            // rivers at load time). A previous bake's bin can outlive its
-            // own worldgen run, so when this bake produces no segments for
-            // the tile, remove any stale file in place — otherwise the
-            // client would load a ribbon while the always-rewritten splat
-            // / heightmap / vegetation files reflect the new world.
-            let rpath = coords::river_path(out, tx, tz);
-            let bin = river_buckets
-                .get(&(tx, tz))
-                .and_then(|segs| tile_bake::bake_rivers_binary(segs));
-            if let Some(bin) = bin {
-                std::fs::write(&rpath, &bin)
-                    .with_context(|| format!("write {}", rpath.display()))?;
+            // RFD1 river-field. Stale file is removed when this tile has
+            // no segments so a previous-world bin doesn't outlive its bake.
+            let rfpath = coords::river_field_path(out, tx, tz);
+            if let Some(field_bin) = baked.river_field.as_ref() {
+                std::fs::write(&rfpath, field_bin)
+                    .with_context(|| format!("write {}", rfpath.display()))?;
             } else {
-                match std::fs::remove_file(&rpath) {
+                match std::fs::remove_file(&rfpath) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => {
                         return Err(
-                            anyhow::Error::from(e).context(format!("remove {}", rpath.display()))
+                            anyhow::Error::from(e).context(format!("remove {}", rfpath.display()))
                         );
                     }
                 }
