@@ -1,0 +1,269 @@
+//! Prompt construction: turn the current `SharedState`, the queue of
+//! pending server events, and the active schedule entry into a single
+//! string suitable for sending to an LLM. Also resolves which schedule
+//! entry should currently be active based on game time.
+
+use onlinerpg_shared::ServerMessage;
+
+use crate::orchestrator::ScheduleEntry;
+use crate::state::SharedState;
+
+/// Build a prompt string from current state and events.
+pub(super) fn build_prompt(
+    state: &SharedState,
+    events: &[ServerMessage],
+    agent_events: &[String],
+    schedule: &[ScheduleEntry],
+    active_schedule_idx: Option<usize>,
+) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str("=== CURRENT STATE ===\n");
+    prompt.push_str(&state.format_world_state());
+    prompt.push('\n');
+
+    if let Some(ctx) = format_schedule_context(schedule, active_schedule_idx) {
+        prompt.push_str(&ctx);
+        prompt.push('\n');
+    }
+
+    let has_server_events = events.iter().any(|e| format_event(state, e).is_some());
+    if has_server_events || !agent_events.is_empty() {
+        prompt.push_str("\n=== EVENTS ===\n");
+        for event in events {
+            if let Some(line) = format_event(state, event) {
+                prompt.push_str(&line);
+                prompt.push('\n');
+            }
+        }
+        for line in agent_events {
+            prompt.push_str(line);
+            prompt.push('\n');
+        }
+    }
+
+    prompt.push_str("\nWhat do you do?");
+    prompt
+}
+
+/// Format a server event as a human-readable line for LLM prompts.
+/// Returns `None` for events that should not be forwarded to the LLM.
+fn format_event(state: &SharedState, msg: &ServerMessage) -> Option<String> {
+    match msg {
+        ServerMessage::JoinSuccess { player } => Some(format!(
+            "[Join] You joined as {} at ({:.1}, {:.1}, {:.1})",
+            player.name, player.position.x, player.position.y, player.position.z
+        )),
+        ServerMessage::GameState {
+            players, monsters, ..
+        } => {
+            let mut lines = vec![format!(
+                "[World] {} player(s), {} monster(s)",
+                players.len(),
+                monsters.len()
+            )];
+            for p in players.values() {
+                lines.push(format!(
+                    "  Player: {} Lv.{} HP {}/{}",
+                    p.name, p.level, p.health, p.max_health
+                ));
+            }
+            for m in monsters.values() {
+                lines.push(format!(
+                    "  Monster: {} [{}] HP {}/{}",
+                    m.monster_type, m.id, m.health, m.max_health
+                ));
+            }
+            Some(lines.join("\n"))
+        }
+        ServerMessage::GameTimeSync { datetime, is_night } => Some(format!(
+            "[Time] Y{} M{} D{} {:02}:{:02} ({})",
+            datetime.year,
+            datetime.month,
+            datetime.day,
+            datetime.hour,
+            datetime.minute,
+            if *is_night { "night" } else { "day" }
+        )),
+        ServerMessage::ChatMessage {
+            player_id, message, ..
+        } => Some(format!(
+            "[Chat] {}: {message}",
+            player_name(state, player_id)
+        )),
+        ServerMessage::PlayerJoined { player } => Some(format!("[PlayerJoined] {}", player.name)),
+        ServerMessage::PlayerLeft { player_id } => {
+            Some(format!("[PlayerLeft] {}", player_name(state, player_id)))
+        }
+        ServerMessage::PlayerMoved {
+            player_id,
+            position,
+            ..
+        } => Some(format!(
+            "[Move] {} -> ({:.1}, {:.1}, {:.1})",
+            player_name(state, player_id),
+            position.x,
+            position.y,
+            position.z
+        )),
+        ServerMessage::MonsterSpawned { monster } => Some(format!(
+            "[MonsterSpawned] {} ({})",
+            monster.id, monster.monster_type
+        )),
+        ServerMessage::MonsterDead { monster_id } => Some(format!("[MonsterDead] {monster_id}")),
+        ServerMessage::PlayerAttacked {
+            player_id,
+            monster_id,
+            hit,
+            damage,
+            ..
+        } => Some(format!(
+            "[Attack] {} -> {monster_id}: hit={hit} dmg={damage}",
+            player_name(state, player_id)
+        )),
+        ServerMessage::MonsterAttackedPlayer {
+            monster_id,
+            player_id,
+            hit,
+            damage,
+            current_health,
+            ..
+        } => Some(format!(
+            "[MonsterAttack] {monster_id} -> {}: hit={hit} dmg={damage} hp={current_health}",
+            player_name(state, player_id)
+        )),
+        ServerMessage::PlayerDead { player_id } => {
+            Some(format!("[PlayerDead] {}", player_name(state, player_id)))
+        }
+        ServerMessage::PlayerRespawned { player } => Some(format!(
+            "[Respawn] {} HP {}/{}",
+            player.name, player.health, player.max_health
+        )),
+        ServerMessage::XpGained {
+            xp_amount,
+            total_xp,
+            new_level,
+            leveled_up,
+            ..
+        } => {
+            let mut s = format!("[XP] +{xp_amount} (total: {total_xp}, level: {new_level})");
+            if *leveled_up {
+                s.push_str(" LEVEL UP!");
+            }
+            Some(s)
+        }
+        ServerMessage::CharacterError { message } => Some(format!("[CharacterError] {message}")),
+        ServerMessage::CharacterCreated { character } => Some(format!(
+            "[CharacterCreated] id={} {} Lv.{} {:?}",
+            character.id, character.name, character.level, character.class
+        )),
+        ServerMessage::CharacterStatsRolled { attributes, max_hp } => Some(format!(
+            "[StatsRolled] STR:{} DEX:{} CON:{} INT:{} WIS:{} CHA:{} HP:{}",
+            attributes.r#str,
+            attributes.dex,
+            attributes.con,
+            attributes.int,
+            attributes.wis,
+            attributes.cha,
+            max_hp
+        )),
+        ServerMessage::MonsterMoved {
+            monster_id,
+            position,
+            state: monster_state,
+            ..
+        } => Some(format!(
+            "[MonsterMoved] {monster_id} -> ({:.1}, {:.1}, {:.1}) state={monster_state}",
+            position.x, position.y, position.z
+        )),
+        ServerMessage::Kicked { reason, .. } => Some(format!("[Kicked] {reason}")),
+        // Skip unknown/unhandled event types
+        _ => None,
+    }
+}
+
+/// Resolve a player_id to a display name using SharedState.
+/// Falls back to the raw ID if the player is not found.
+fn player_name(state: &SharedState, player_id: &str) -> String {
+    if state.self_player_id.as_deref() == Some(player_id) {
+        if let Some(ref p) = state.self_player {
+            return p.name.clone();
+        }
+    }
+    if let Some(p) = state.nearby_players.get(player_id) {
+        return p.name.clone();
+    }
+    player_id.to_string()
+}
+
+/// Resolve which schedule entry is currently active based on game time.
+/// Returns `(entry_index, game_hour)` — the hour component ensures recurring
+/// entries re-trigger each hour even though the index stays the same.
+/// Conditions are pre-validated at load time via `ScheduleEntry::parse_condition`.
+pub(super) fn resolve_active_schedule(
+    schedule: &[ScheduleEntry],
+    is_night: Option<bool>,
+    game_hour: Option<u32>,
+    game_minute: Option<u32>,
+) -> (Option<usize>, Option<u32>) {
+    use crate::orchestrator::ScheduleCondition;
+
+    let mut best: Option<usize> = None;
+
+    for (i, entry) in schedule.iter().enumerate() {
+        let condition = match entry.condition.as_ref() {
+            Some(c) => c,
+            None => continue,
+        };
+        let matched = match condition {
+            ScheduleCondition::Day => is_night == Some(false),
+            ScheduleCondition::Night => is_night == Some(true),
+            ScheduleCondition::Time {
+                hour: eh,
+                minute: em,
+            } => match (game_hour, game_minute) {
+                (Some(gh), Some(gm)) => gh * 60 + gm >= eh * 60 + em,
+                _ => false,
+            },
+            ScheduleCondition::Recurring { minute: em } => match (game_hour, game_minute) {
+                (Some(_), Some(gm)) => gm >= *em,
+                _ => false,
+            },
+        };
+
+        if matched {
+            best = Some(i);
+        }
+    }
+
+    let hour_for_recurring = best.and_then(|i| {
+        if matches!(
+            schedule[i].condition,
+            Some(ScheduleCondition::Recurring { .. })
+        ) {
+            game_hour
+        } else {
+            None
+        }
+    });
+    (best, hour_for_recurring)
+}
+
+/// Format current schedule context for inclusion in LLM prompts.
+fn format_schedule_context(
+    schedule: &[ScheduleEntry],
+    active_idx: Option<usize>,
+) -> Option<String> {
+    let entry = &schedule[active_idx?];
+    let mut line = format!(
+        "Schedule: go to {} at ({:.1}, {:.1}, {:.1})",
+        entry.display_label(),
+        entry.pos[0],
+        entry.pos[1],
+        entry.pos[2]
+    );
+    if let Some(ref action) = entry.action {
+        line.push_str(&format!(" — using {action} (DO NOT move, you are resting)"));
+    }
+    Some(line)
+}
