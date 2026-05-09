@@ -6,9 +6,10 @@
 //! First/last index of each polyline is preserved so settlement /
 //! river-source / river-mouth anchors don't drift.
 
+use super::super::grid::fold_x_delta;
 use super::super::rivers::RiverMap;
 use super::axis::{SnapAxis, pick_river_axis};
-use super::{RoadNetwork, fold_x_delta};
+use super::RoadNetwork;
 
 /// Number of cells on each side of a road↔river crossing forced into a
 /// single cardinal axis. Sized so two rounds of Chaikin smoothing in

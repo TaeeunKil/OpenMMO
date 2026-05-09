@@ -151,18 +151,6 @@ pub fn compute_roads(
     RoadNetwork { roads }
 }
 
-/// Fold a raw X delta into the shorter wrap direction (≤ res/2 in magnitude).
-/// Shared by `merge` and `snap` for X-wrap-aware cell-distance math.
-#[inline]
-pub(super) fn fold_x_delta(mut d: i32, res_i: i32) -> i32 {
-    if d > res_i / 2 {
-        d -= res_i;
-    } else if d < -res_i / 2 {
-        d += res_i;
-    }
-    d
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::{continent, elevation, rivers, settlements};

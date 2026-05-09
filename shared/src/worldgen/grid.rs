@@ -29,6 +29,32 @@ impl PartialOrd for MinF32 {
     }
 }
 
+/// Fold a raw X delta into the shorter wrap direction (≤ res/2 in magnitude).
+/// Used wherever cell-coord polylines or maps span the X-wrapping seam and
+/// callers need a signed displacement that doesn't read as a world-spanning
+/// jump.
+#[inline]
+pub(crate) fn fold_x_delta(mut d: i32, res_i: i32) -> i32 {
+    if d > res_i / 2 {
+        d -= res_i;
+    } else if d < -res_i / 2 {
+        d += res_i;
+    }
+    d
+}
+
+/// Floating-point counterpart of `fold_x_delta`.
+#[inline]
+pub(crate) fn fold_x_delta_f32(d: f32, res_f: f32) -> f32 {
+    if d > res_f * 0.5 {
+        d - res_f
+    } else if d < -res_f * 0.5 {
+        d + res_f
+    } else {
+        d
+    }
+}
+
 /// Multi-source 4-connected BFS over a binary mask, returning the cell-
 /// distance from every cell to the nearest source cell. X wraps, Y doesn't.
 /// Source cells (where `mask[i] == source_val`) have distance 0. Distances

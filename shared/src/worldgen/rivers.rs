@@ -14,7 +14,7 @@
 use std::collections::BinaryHeap;
 
 use super::global_map::GlobalMap;
-use super::grid::MinF32;
+use super::grid::{MinF32, fold_x_delta};
 
 /// Peak elevation threshold (as a fraction of `max_elevation_m`) for
 /// `extract_rivers` to treat a local maximum as a river source. Shared
@@ -107,13 +107,7 @@ fn parallel_merge_radius_cells(res: usize) -> i32 {
 }
 
 fn step_dir(from: (u32, u32), to: (u32, u32), res: usize) -> Option<(i8, i8)> {
-    let mut dx = to.0 as i32 - from.0 as i32;
-    let half = res as i32 / 2;
-    if dx > half {
-        dx -= res as i32;
-    } else if dx < -half {
-        dx += res as i32;
-    }
+    let dx = fold_x_delta(to.0 as i32 - from.0 as i32, res as i32);
     let dy = to.1 as i32 - from.1 as i32;
     if dx == 0 && dy == 0 {
         None
@@ -187,23 +181,12 @@ fn hash_unit(mut x: u64) -> f32 {
     ((x >> 40) as f32) / ((1u64 << 24) as f32)
 }
 
-#[inline]
-fn folded_x_delta(from_x: u32, to_x: u32, res: usize) -> i32 {
-    let mut dx = to_x as i32 - from_x as i32;
-    let res_i = res as i32;
-    if dx > res_i / 2 {
-        dx -= res_i;
-    } else if dx < -res_i / 2 {
-        dx += res_i;
-    }
-    dx
-}
-
 fn cumulative_lengths_cells(points: &[(u32, u32)], res: usize) -> Vec<f32> {
     let mut lengths = Vec::with_capacity(points.len());
     lengths.push(0.0);
+    let res_i = res as i32;
     for i in 1..points.len() {
-        let dx = folded_x_delta(points[i - 1].0, points[i].0, res) as f32;
+        let dx = fold_x_delta(points[i].0 as i32 - points[i - 1].0 as i32, res_i) as f32;
         let dy = points[i].1 as f32 - points[i - 1].1 as f32;
         lengths.push(lengths[i - 1] + (dx * dx + dy * dy).sqrt());
     }
@@ -241,7 +224,7 @@ fn meandered_point(
         return original;
     }
 
-    let dx = folded_x_delta(points[lo].0, points[hi].0, res) as f32;
+    let dx = fold_x_delta(points[hi].0 as i32 - points[lo].0 as i32, res as i32) as f32;
     let dy = points[hi].1 as f32 - points[lo].1 as f32;
     let len = (dx * dx + dy * dy).sqrt();
     if len < 1e-3 {
@@ -314,7 +297,7 @@ fn append_wrapped_line(
     flow_to: f32,
     res: usize,
 ) {
-    let dx = folded_x_delta(from.0, to.0, res);
+    let dx = fold_x_delta(to.0 as i32 - from.0 as i32, res as i32);
     let dy = to.1 as i32 - from.1 as i32;
     let steps = dx.abs().max(dy.abs()) as usize;
     if steps == 0 {

@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 
-use super::{RoadNetwork, fold_x_delta};
+use super::super::grid::fold_x_delta;
+use super::RoadNetwork;
 
 /// Cell-distance threshold for treating two road points as "co-located"
 /// during the parallel-run merge. ~3 cells (~24 m at the default 8 m/cell
@@ -173,8 +174,6 @@ pub fn merge_parallel_interiors(road_net: &mut RoadNetwork, res: usize) {
     }
 
     // Best alignment per (lo, hi) road pair, where lo < hi.
-    // Stored as (length, i_lo, i_hi, j_lo, j_hi, j_descending).
-    type Alignment = (usize, usize, usize, usize, bool);
     let mut best: HashMap<(usize, usize), (usize, Alignment)> = HashMap::new();
     // Per-pair `i_lo` ranges already discovered by extend_run. Disjoint
     // runs are still found — their seed `i_lo` falls outside every
@@ -238,9 +237,27 @@ pub fn merge_parallel_interiors(road_net: &mut RoadNetwork, res: usize) {
                         let len_r = e_lo_r - s_lo_r;
 
                         let (best_len, alignment) = if len_f >= len_r {
-                            (len_f, (s_lo_f, e_lo_f, s_hi_f, e_hi_f, false))
+                            (
+                                len_f,
+                                Alignment {
+                                    lo_start: s_lo_f,
+                                    lo_end: e_lo_f,
+                                    hi_start: s_hi_f,
+                                    hi_end: e_hi_f,
+                                    hi_descending: false,
+                                },
+                            )
                         } else {
-                            (len_r, (s_lo_r, e_lo_r, j_lo_r, j_hi_r, true))
+                            (
+                                len_r,
+                                Alignment {
+                                    lo_start: s_lo_r,
+                                    lo_end: e_lo_r,
+                                    hi_start: j_lo_r,
+                                    hi_end: j_hi_r,
+                                    hi_descending: true,
+                                },
+                            )
                         };
 
                         if best_len < min_len {
@@ -250,9 +267,9 @@ pub fn merge_parallel_interiors(road_net: &mut RoadNetwork, res: usize) {
                         covered_lo
                             .entry(pair)
                             .or_default()
-                            .push((alignment.0, alignment.1));
+                            .push((alignment.lo_start, alignment.lo_end));
 
-                        let entry = best.entry(pair).or_insert((0, (0, 0, 0, 0, false)));
+                        let entry = best.entry(pair).or_insert((0, Alignment::default()));
                         if best_len > entry.0 {
                             *entry = (best_len, alignment);
                         }
@@ -273,20 +290,20 @@ pub fn merge_parallel_interiors(road_net: &mut RoadNetwork, res: usize) {
     let mut claimed = vec![false; road_net.roads.len()];
     let mut applied = 0usize;
     let mut total_cells = 0usize;
-    for ((lo, hi), len, (i_lo, i_hi, j_lo, j_hi, j_descending)) in matches {
+    for ((lo, hi), len, a) in matches {
         if claimed[lo] || claimed[hi] {
             continue;
         }
-        if i_lo >= i_hi || j_lo >= j_hi {
+        if a.lo_start >= a.lo_end || a.hi_start >= a.hi_end {
             continue;
         }
-        let trunk_segment: Vec<(u32, u32)> = road_net.roads[lo].points[i_lo..=i_hi].to_vec();
-        let segment: Vec<(u32, u32)> = if j_descending {
+        let trunk_segment: Vec<(u32, u32)> = road_net.roads[lo].points[a.lo_start..=a.lo_end].to_vec();
+        let segment: Vec<(u32, u32)> = if a.hi_descending {
             trunk_segment.into_iter().rev().collect()
         } else {
             trunk_segment
         };
-        road_net.roads[hi].points.splice(j_lo..=j_hi, segment);
+        road_net.roads[hi].points.splice(a.hi_start..=a.hi_end, segment);
         claimed[lo] = true;
         claimed[hi] = true;
         applied += 1;
@@ -305,6 +322,20 @@ pub fn merge_parallel_interiors(road_net: &mut RoadNetwork, res: usize) {
 enum EndKind {
     Start,
     End,
+}
+
+/// Matched parallel run between two roads (lo = trunk, hi = follower) for
+/// the interior merge pass. Indices are inclusive into each road's
+/// `points`. `hi_descending` is set when the alignment was best in the
+/// reverse direction — the follower's segment must be reversed before the
+/// splice so the seam directions agree.
+#[derive(Copy, Clone, Debug, Default)]
+struct Alignment {
+    lo_start: usize,
+    lo_end: usize,
+    hi_start: usize,
+    hi_end: usize,
+    hi_descending: bool,
 }
 
 #[inline]

@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::super::global_map::GlobalMap;
+use super::super::grid::fold_x_delta_f32;
 use super::super::rivers::RiverMap;
 use super::super::roads::RoadNetwork;
 use super::super::vector_features::{nearest_river_segment, river_segments_near_tile};
@@ -308,12 +309,7 @@ fn river_world_tangent(
         points[pi + 1]
     };
     let res = cfg.global_res as f32;
-    let mut dx = next.0 as f32 - prev.0 as f32;
-    if dx > res * 0.5 {
-        dx -= res;
-    } else if dx < -res * 0.5 {
-        dx += res;
-    }
+    let dx = fold_x_delta_f32(next.0 as f32 - prev.0 as f32, res);
     let dy = next.1 as f32 - prev.1 as f32;
     let mpc = cfg.meters_per_cell();
     let wx = dx * mpc;

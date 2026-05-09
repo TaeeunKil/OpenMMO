@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use super::super::grid::fold_x_delta_f32;
 use super::super::settlements::Settlement;
 
 /// Cosine threshold above which two incident edges at the same vertex are
@@ -155,16 +156,7 @@ pub(super) fn euclidean_sq(a: &Settlement, b: &Settlement, res_f: f32) -> f32 {
 /// Unit direction vector from `a` to `b`, with X-wrap handled by picking
 /// the shorter horizontal side.
 fn direction(a: &Settlement, b: &Settlement, res_f: f32) -> (f32, f32) {
-    let dx_raw = b.cell_x as f32 - a.cell_x as f32;
-    let dx = if dx_raw.abs() > res_f * 0.5 {
-        if dx_raw > 0.0 {
-            dx_raw - res_f
-        } else {
-            dx_raw + res_f
-        }
-    } else {
-        dx_raw
-    };
+    let dx = fold_x_delta_f32(b.cell_x as f32 - a.cell_x as f32, res_f);
     let dy = b.cell_y as f32 - a.cell_y as f32;
     let len = (dx * dx + dy * dy).sqrt().max(1e-6);
     (dx / len, dy / len)

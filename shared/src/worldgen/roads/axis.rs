@@ -15,6 +15,7 @@ pub(super) enum SnapAxis {
 }
 
 impl SnapAxis {
+    #[inline]
     pub(super) fn perpendicular(self) -> SnapAxis {
         match self {
             SnapAxis::Horizontal => SnapAxis::Vertical,
@@ -49,6 +50,7 @@ pub(super) fn pick_river_axis(dx: f32, dy: f32) -> SnapAxis {
 /// Snap-axis classification of a single A* step. The 8-way step neighbourhood
 /// maps onto the 4 axes: `(±1, 0) → Horizontal`, `(0, ±1) → Vertical`,
 /// `(±1, ±1) same sign → NW-SE`, opposite sign `→ NE-SW`.
+#[inline]
 pub(super) fn step_axis(dx: i32, dy: i32) -> SnapAxis {
     match (dx, dy) {
         (_, 0) => SnapAxis::Horizontal,

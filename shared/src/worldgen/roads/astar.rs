@@ -9,7 +9,7 @@
 use std::collections::BinaryHeap;
 
 use super::super::global_map::GlobalMap;
-use super::super::grid::MinF32;
+use super::super::grid::{MinF32, fold_x_delta_f32};
 use super::super::rivers::Polyline;
 use super::axis::{SnapAxis, pick_river_axis, step_axis};
 
@@ -117,13 +117,8 @@ impl RiverField {
                 } else {
                     pts[i + 1]
                 };
-                let mut dx = next.0 as f32 - prev.0 as f32;
+                let dx = fold_x_delta_f32(next.0 as f32 - prev.0 as f32, res_f);
                 let dy = next.1 as f32 - prev.1 as f32;
-                if dx > res_f * 0.5 {
-                    dx -= res_f;
-                } else if dx < -res_f * 0.5 {
-                    dx += res_f;
-                }
                 let len = (dx * dx + dy * dy).sqrt().max(1e-6);
                 let tx = dx / len;
                 let ty = dy / len;
