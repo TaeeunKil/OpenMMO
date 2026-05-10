@@ -104,7 +104,7 @@ pub fn erode_hydraulic(map: &mut GlobalMap) {
     apply_post_erosion_shaping(map);
 }
 
-/// Phase 3b: post-erosion shaping. Three gameplay-driven passes layered
+/// Phase 3b: post-erosion shaping. Four gameplay-driven passes layered
 /// on top of the physically-faithful sim output:
 ///   1. Lowland expansion — peak-preserving power curve so plains read as
 ///      flat ground instead of a plateau near `base_elevation_m`.
@@ -115,10 +115,57 @@ pub fn erode_hydraulic(map: &mut GlobalMap) {
 ///   3. Coast beach ramp — pulls coastal cells down to a configured
 ///      shoreline height, with a slow noise pattern reserving a fraction
 ///      of the coast as cliffs.
+///   4. Min land floor — raises any remaining sub-floor land cells to
+///      `min_land_height_m + small_noise` so river banks always clear
+///      the river water surface (0.5 m) and the river mesh's depth-fade
+///      can terminate cleanly against terrain.
 fn apply_post_erosion_shaping(map: &mut GlobalMap) {
     apply_lowland_expansion(map);
     apply_plain_band_compression(map);
     apply_coast_beach_ramp(map);
+    apply_min_land_floor(map);
+}
+
+/// Subsystem salt for the floor-bumpiness noise so it doesn't correlate
+/// with the cliff or initial-relief patterns.
+const MIN_LAND_FLOOR_NOISE_SALT: u64 = 0xF100_F100_F100_F100;
+
+/// Raise every land cell to at least `min_land_height_m` plus a small
+/// noise modulation. Runs LAST in Phase 3b so it overrides the beach
+/// ramp's pull-down — coastal cells the ramp dropped to ~0.1 m get
+/// lifted back up to ~1 m, giving river-mouth tiles the clearance their
+/// banks need. Cells already above the floor are left alone, so
+/// mountains and inland highs keep their natural shape.
+fn apply_min_land_floor(map: &mut GlobalMap) {
+    let cfg = &map.config;
+    let min_h = cfg.min_land_height_m;
+    if min_h <= 0.0 {
+        return;
+    }
+    let amp = cfg.min_land_height_noise_amp_m.max(0.0);
+    let wavelength = cfg
+        .scaled_cells(cfg.min_land_height_noise_wavelength_cells)
+        .max(1.0);
+    let freq = 1.0 / wavelength;
+    let noise = PerlinNoise3D::new(cfg.seed ^ MIN_LAND_FLOOR_NOISE_SALT);
+
+    let res = cfg.global_res as usize;
+    let world_width = res as f32;
+    for y in 0..res {
+        for x in 0..res {
+            let i = y * res + x;
+            if map.land_mask[i] != 1 {
+                continue;
+            }
+            // Half-amplitude noise in [-1, 1] → modulation in [-amp/2, +amp/2]
+            // so peak-to-peak is `amp` as documented.
+            let n = fbm_wrap_x(&noise, x as f32, y as f32, world_width, freq, 1, 2.0, 0.5);
+            let floor = min_h + n * amp * 0.5;
+            if map.elevation_m[i] < floor {
+                map.elevation_m[i] = floor;
+            }
+        }
+    }
 }
 
 /// Maximum land elevation in `elevation`, floored at 1e-6 so callers can
@@ -836,6 +883,47 @@ mod tests {
         elevation::generate_elevation(&mut b);
         erode_hydraulic(&mut b);
         assert_eq!(a.elevation_m, b.elevation_m);
+    }
+
+    #[test]
+    fn min_land_floor_lifts_all_land_above_threshold() {
+        // Floor + half-amplitude noise → every land cell must clear
+        // (min − amp/2). Coastal cells the beach ramp drops to 0.1 m
+        // come back up to ≥ 0.75 m with the default config (1 m floor,
+        // 0.5 m amplitude), comfortably above the river water surface.
+        let cfg = test_config(96);
+        let mut map = continent::generate_continent_mask(&cfg);
+        elevation::generate_elevation(&mut map);
+        erode_hydraulic(&mut map);
+        let lower_bound = cfg.min_land_height_m - cfg.min_land_height_noise_amp_m * 0.5;
+        for (i, &h) in map.elevation_m.iter().enumerate() {
+            if map.land_mask[i] == 1 {
+                assert!(
+                    h >= lower_bound - 1e-3,
+                    "land cell {i} below floor: {h} < {lower_bound}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn min_land_floor_disabled_when_zero() {
+        // `min_land_height_m = 0` must be a true no-op: cells that the
+        // beach ramp pulled to 0.1 m stay at 0.1 m.
+        let mut cfg = test_config(96);
+        cfg.min_land_height_m = 0.0;
+        let mut map = continent::generate_continent_mask(&cfg);
+        elevation::generate_elevation(&mut map);
+        erode_hydraulic(&mut map);
+        let any_below_floor = map
+            .elevation_m
+            .iter()
+            .zip(map.land_mask.iter())
+            .any(|(&h, &m)| m == 1 && h < 0.5);
+        assert!(
+            any_below_floor,
+            "with floor disabled some coastal cells should remain below 0.5 m"
+        );
     }
 
     #[test]

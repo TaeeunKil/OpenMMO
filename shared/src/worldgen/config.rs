@@ -265,6 +265,20 @@ pub struct WorldGenConfig {
     /// beach-to-water transitions instead of an 8 m drop at every cell.
     pub coast_beach_max_height_m: f32,
 
+    /// Hard floor on land elevation (m). Land cells below this floor are
+    /// raised to it as the last step of Phase 3b. Must clear the river
+    /// water surface so banks occlude the river mesh; raise it if low
+    /// coastal land lets the river bleed across whole tiles. 0 disables.
+    pub min_land_height_m: f32,
+
+    /// Peak-to-peak amplitude (m) of the noise modulation added on top of
+    /// `min_land_height_m`, so the floor reads as gentle bumps instead
+    /// of a flat plateau. 0 disables noise.
+    pub min_land_height_noise_amp_m: f32,
+
+    /// Wavelength (reference cells) of the floor-modulation noise.
+    pub min_land_height_noise_wavelength_cells: f32,
+
     /// Width of the coast ramp in reference cells. The ramp blends
     /// linearly from `coast_beach_max_height_m` at d=0 to the natural
     /// post-erosion elevation at d=N. Wider = gentler, more sand;
@@ -451,6 +465,13 @@ impl Default for WorldGenConfig {
             plain_band_power: 15.0,
             coast_beach_max_height_m: 0.1,
             coast_beach_distance_cells: 12,
+            // 1 m floor with ±25 cm bumpiness keeps coastal land safely
+            // above the river water surface (0.5 m) so the river mesh's
+            // depth-fade terminates at the natural bank instead of
+            // flooding across the whole tile.
+            min_land_height_m: 1.0,
+            min_land_height_noise_amp_m: 0.5,
+            min_land_height_noise_wavelength_cells: 6.0,
             coast_cliff_fraction: 0.2,
             coast_cliff_wavelength_cells: 80.0,
             settlement_target_count: 60,

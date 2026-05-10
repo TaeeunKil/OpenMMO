@@ -51,10 +51,10 @@
   riverGroup.name = 'rivers'
 
   const wireframeMaterial = new THREE.LineBasicMaterial({
-    color: 0xff3366,
+    color: 0xff0000,
     transparent: true,
     opacity: 0.9,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
   })
 
@@ -95,23 +95,23 @@
     }
   }
 
-  function addWireframeForTile(id: string, geometry: THREE.BufferGeometry) {
+  function addWireframeForTile(id: string, mesh: THREE.Mesh) {
     if (wireframeMeshes.has(id)) return
     const wf = new THREE.LineSegments(
-      new THREE.WireframeGeometry(geometry),
+      new THREE.WireframeGeometry(mesh.geometry),
       wireframeMaterial
     )
     wf.renderOrder = 10
     wf.castShadow = false
     wf.receiveShadow = false
-    riverGroup.add(wf)
+    mesh.add(wf)
     wireframeMeshes.set(id, wf)
   }
 
   function removeWireframeForTile(id: string) {
     const wf = wireframeMeshes.get(id)
     if (!wf) return
-    riverGroup.remove(wf)
+    wf.removeFromParent()
     wf.geometry.dispose()
     wireframeMeshes.delete(id)
   }
@@ -119,7 +119,7 @@
   $effect(() => {
     if ($riverWireframeVisible) {
       for (const [id, mesh] of tileMeshes) {
-        if (mesh) addWireframeForTile(id, mesh.geometry)
+        if (mesh) addWireframeForTile(id, mesh)
       }
     } else {
       for (const id of [...wireframeMeshes.keys()]) {
@@ -131,14 +131,9 @@
   function disposeTile(id: string) {
     const mesh = tileMeshes.get(id)
     if (mesh) {
+      removeWireframeForTile(id)
       riverGroup.remove(mesh)
       mesh.geometry.dispose()
-      const wf = wireframeMeshes.get(id)
-      if (wf) {
-        riverGroup.remove(wf)
-        wf.geometry.dispose()
-        wireframeMeshes.delete(id)
-      }
     }
     tileMeshes.delete(id)
     // Field texture is 1:1 with the per-tile material that's discarded
@@ -201,7 +196,7 @@
       tileMeshes.set(id, mesh)
 
       if ($riverWireframeVisible) {
-        addWireframeForTile(id, geometry)
+        addWireframeForTile(id, mesh)
       }
     } finally {
       inflightTiles.delete(id)

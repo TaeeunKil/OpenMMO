@@ -31,8 +31,7 @@ use super::super::global_map::GlobalMap;
 use super::super::vector_features::{nearest_river_segment, RiverSegment};
 use super::constants::{
     HEIGHT_BIAS, HEIGHT_STEP, RIVER_CARVE_DEPTH_EXTRA_M, RIVER_CARVE_DEPTH_MIN_M,
-    RIVER_CARVE_MIN_BED_Y_M, RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M,
-    RIVER_DEPTH_OFFSET_M, RIVER_MAX_WIDTH_M, VERTS_PER_SIDE,
+    RIVER_CARVE_MIN_BED_Y_M, RIVER_DEPTH_OFFSET_M, VERTS_PER_SIDE,
 };
 use super::context::BakeContext;
 use super::heightmap::{lerp, sample_natural_height_single};
@@ -43,16 +42,6 @@ const RIVER_FIELD_HEADER_SIZE: usize = 16;
 const RIVER_FIELD_PIXEL_SIZE: usize = 4;
 const RIVER_FIELD_PAYLOAD_SIZE: usize = VERTS_PER_SIDE * VERTS_PER_SIDE * RIVER_FIELD_PIXEL_SIZE;
 const RIVER_FIELD_TOTAL_SIZE: usize = RIVER_FIELD_HEADER_SIZE + RIVER_FIELD_PAYLOAD_SIZE;
-
-/// Pixels farther than this distance from any river segment carry
-/// `surfaceY = natural ground` so the runtime depth-fade reads `depth =
-/// 0` and skips the river there. Sized to comfortably exceed
-/// `max_half_width + max_taper` (≈15 m) plus a safety margin so a
-/// fragment at the very edge of the carve still sees a coherent
-/// surface — without the margin a single-pixel band at the carve outer
-/// edge could land just past the cutoff and drop alpha mid-bank.
-const INFLUENCE_RADIUS_M: f32 =
-    RIVER_MAX_WIDTH_M * 0.5 + RIVER_CARVE_TAPER_MIN_M + RIVER_CARVE_TAPER_EXTRA_M + 2.0;
 
 /// Bake the per-tile river field. Returns `None` when the tile carries
 /// no river segments — caller skips writing a file.
@@ -112,9 +101,17 @@ fn encode_unit(v: f32) -> i8 {
 }
 
 /// Compute the field record for one pixel: river surface elevation +
-/// downstream-unit flow direction. Falls back to `(bed_y_pixel, 0, 0)`
-/// when the nearest segment is past `INFLUENCE_RADIUS_M` so the runtime
-/// depth-fade collapses to zero outside the carve reach.
+/// downstream-unit flow direction.
+///
+/// `surface_y = bed_at_proj + OFFSET` for every pixel — the surface
+/// stays horizontal across the entire tile because pixels at any
+/// perpendicular distance project to the same centerline point and
+/// share the same `bed_at_proj`. Visibility is left entirely to the
+/// shader's `depth = surface − bed` fade: where the bed (terrain) rises
+/// above `surface`, alpha goes to 0 and the river terminates naturally
+/// at the bank. This relies on `apply_min_land_floor` keeping land
+/// outside the carve > `RIVER_DEPTH_OFFSET_M` so the river doesn't
+/// bleed across the whole tile.
 #[allow(clippy::too_many_arguments)]
 fn compute_pixel(
     wx: f32,
@@ -127,12 +124,9 @@ fn compute_pixel(
     tile_origin_z: f32,
     river_segs: &[RiverSegment],
 ) -> (f32, f32, f32) {
-    let Some((d, idx, t)) = nearest_river_segment(wx, wz, river_segs) else {
+    let Some((_d, idx, t)) = nearest_river_segment(wx, wz, river_segs) else {
         return (bed_y_pixel, 0.0, 0.0);
     };
-    if d > INFLUENCE_RADIUS_M {
-        return (bed_y_pixel, 0.0, 0.0);
-    }
     let seg = &river_segs[idx];
 
     let dx = seg.bx - seg.ax;
@@ -274,28 +268,24 @@ mod tests {
     }
 
     #[test]
-    fn pixel_far_from_river_falls_back_to_bed() {
-        // A pixel at influence_radius + 50 m carries surfaceY = bed_y so
-        // the runtime depth-fade reads depth = 0 there.
-        let cfg = crate::worldgen::config::WorldGenConfig {
-            seed: 7,
-            world_size_m: 1024,
-            global_res: 64,
-            ..Default::default()
-        };
-        let mut map = crate::worldgen::continent::generate_continent_mask(&cfg);
-        crate::worldgen::elevation::generate_elevation(&mut map);
-        let rm = crate::worldgen::rivers::compute_flow(&map);
-        let net = crate::worldgen::roads::compute_roads(&map, &[], &rm);
-        let coast =
-            crate::worldgen::coasts::extract_coasts(&map.land_mask, map.config.global_res as usize);
-        let ctx = BakeContext::new(&map, &rm, &net, &coast);
-        let heights = vec![5.0f32; VERTS_PER_SIDE * VERTS_PER_SIDE];
+    fn surface_is_horizontal_across_whole_tile() {
+        // Every pixel projects to the same centerline section, so its
+        // baked surfaceY must match regardless of perpendicular distance.
+        // Visibility is the shader's job (depth-fade against terrain),
+        // which depends on `apply_min_land_floor` keeping land bed above
+        // `RIVER_DEPTH_OFFSET_M` past the carve.
+        let (map, ctx) = small_test_ctx();
+        let mut heights = vec![5.0f32; VERTS_PER_SIDE * VERTS_PER_SIDE];
+        // Stamp a deeper centerline so bed_at_proj differs from bed_y_pixel:
+        // row z=32 (the segment's z) carved to 1.0m, rest stays at 5m.
+        for i in 0..VERTS_PER_SIDE {
+            heights[32 * VERTS_PER_SIDE + i] = 1.0;
+        }
         let segs = vec![RiverSegment {
-            ax: 300.0,
-            az: 300.0,
-            bx: 320.0,
-            bz: 300.0,
+            ax: -32.0,
+            az: 0.0,
+            bx: 32.0,
+            bz: 0.0,
             flow_norm_a: 0.5,
             flow_norm_b: 0.5,
             width_a: 4.0,
@@ -304,14 +294,33 @@ mod tests {
         let bin = bake_river_field(&map, &ctx, &heights, -32.0, -32.0, &segs)
             .expect("segment present, file is written");
 
-        let off = RIVER_FIELD_HEADER_SIZE;
-        let surface = u16::from_le_bytes([bin[off], bin[off + 1]]);
-        let surface_m = surface as f32 * HEIGHT_STEP - HEIGHT_BIAS;
+        let pixel_surface = |i: usize, j: usize| -> f32 {
+            let off = RIVER_FIELD_HEADER_SIZE
+                + (j * VERTS_PER_SIDE + i) * RIVER_FIELD_PIXEL_SIZE;
+            let s = u16::from_le_bytes([bin[off], bin[off + 1]]);
+            s as f32 * HEIGHT_STEP - HEIGHT_BIAS
+        };
+        // Three pixels at increasing perpendicular distance; all must
+        // share the same surface Y.
+        let on_axis = pixel_surface(32, 32);
+        let mid = pixel_surface(32, 40);
+        let far = pixel_surface(32, 60);
         assert!(
-            (surface_m - 5.0).abs() < 0.05,
-            "far pixel surfaceY should match bed (5.0 m), got {surface_m}"
+            (on_axis - mid).abs() < 0.05 && (on_axis - far).abs() < 0.05,
+            "surface must be horizontal across the tile: axis={on_axis} mid={mid} far={far}"
         );
-        assert_eq!(bin[off + 2] as i8, 0, "far pixel flowX should be 0");
-        assert_eq!(bin[off + 3] as i8, 0, "far pixel flowZ should be 0");
+        assert!(
+            (on_axis - 1.5).abs() < 0.1,
+            "surface should be bed_at_proj (1.0m) + offset (0.5m), got {on_axis}"
+        );
+
+        // Flow direction propagates to every pixel so ripples are
+        // continuous. Segment runs +X so flowX≈+127.
+        let off = RIVER_FIELD_HEADER_SIZE
+            + (60 * VERTS_PER_SIDE + 32) * RIVER_FIELD_PIXEL_SIZE;
+        let flow_x = bin[off + 2] as i8;
+        let flow_z = bin[off + 3] as i8;
+        assert!(flow_x > 100, "far pixel should still carry flowX, got {flow_x}");
+        assert!(flow_z.abs() < 10, "flowZ should stay near 0, got {flow_z}");
     }
 }
