@@ -99,37 +99,44 @@ pub(super) const RIVER_DEPTH_OFFSET_M: f32 = 0.5;
 /// elevation cutoff clipped sand to just the first few meters while this
 /// directly caps the delta length at the ocean-facing side.
 pub(super) const RIVER_MOUTH_SAND_COAST_DIST_M: f32 = 50.0;
-/// Width-fan window (meters of base-cell elevation). Below `LOW` the
-/// polyline vertex is widened to `1 + EXTRA` of its natural width; above
-/// `HIGH` it keeps the natural width. Applied globally to `rivers_world`
+/// Width-fan window (cells of arc-length along the polyline, measured back
+/// from the river mouth). Vertices at or past `ARC_CELLS` from the mouth
+/// keep their natural width; vertices closer to the mouth are widened up
+/// to `1 + EXTRA` at the mouth itself. Applied globally to `rivers_world`
 /// in `BakeContext::new` so heightmap carving, splatmap classification,
 /// and the client ribbon all see the same fan-scaled widths — otherwise
-/// the water surface plane widens past the carved banks.
+/// the water surface plane widens past the carved banks. Past the coast,
+/// the client sea extension tapers the wedge back to a point (see
+/// `SEA_EXTEND_*` in `river-geometry.ts`), producing the symmetric
+/// spindle-shaped delta centered on the coastline.
 ///
-/// Window is tuned so the fan opens close to the coast rather than
-/// widening the river far upstream — a wider window reads as "river
-/// is just wider here" instead of as a localized 부채꼴 delta. The
-/// `~4 m of approach elevation` window translates to roughly
-/// 20–40 m of horizontal polyline at typical coastal slopes. Past
-/// the coast, the client sea extension tapers the wedge back to a
-/// point (see `SEA_EXTEND_*` in `river-geometry.ts`), producing the
-/// symmetric spindle-shaped delta centered on the coastline.
-///
-/// The fan is unbounded below `LOW_M` by design: `apply_mouth_fan_widths`
-/// lets the reciprocal curve keep climbing for underwater polyline
-/// vertices so the rate of widening stays monotonic (no plateau at the
-/// coastline), and the wedge taper bounds the final visual width
-/// regardless of tip multiplier.
+/// `ARC_CELLS` matches the old `DISTRIBUTARY_APEX_OFFSET_CELLS` so the
+/// wedge opens at the same on-polyline location where distributary
+/// branches used to fork — a localized 부채꼴 delta rather than a generic
+/// "river is wider here" effect.
 ///
 /// `SHARPNESS` controls how concentrated the widening is around the
 /// coastline. The shape factor is `s(t) = ((1 + k)/(k·t + 1) - 1) / k`
-/// with `k = SHARPNESS`, which is the unit-normalized form of `1/(k·t+1)`:
-/// `s(1)=0`, `s(0)=1`, and `s` blows up as `t → -1/k` from above. Higher
-/// `k` ⇒ flatter upstream + sharper flare at the coast.
-pub(super) const RIVER_MOUTH_FAN_BASE_LOW_M: f32 = 0.0;
-pub(super) const RIVER_MOUTH_FAN_BASE_HIGH_M: f32 = 4.0;
-pub(super) const RIVER_MOUTH_FAN_EXTRA: f32 = 2.0;
-pub(super) const RIVER_MOUTH_FAN_SHARPNESS: f32 = 2.0;
+/// with `k = SHARPNESS` and `t = arc_distance_from_mouth / window`:
+/// `s(1)=0` at the wedge start, `s(0)=1` at the mouth. Higher `k` ⇒
+/// flatter upstream + sharper flare at the coast.
+pub(super) const RIVER_MOUTH_FAN_ARC_CELLS: f32 = 8.5;
+pub(super) const RIVER_MOUTH_FAN_EXTRA: f32 = 10.0;
+pub(super) const RIVER_MOUTH_FAN_SHARPNESS: f32 = 1.5;
+/// Perpendicular bank wobble (m) added per fan-zone vertex on top of the
+/// straightened apex→mouth axis. Scales with the vertex's fan progress
+/// (0 at apex, 1 at mouth) so wider sections wobble more. Without this
+/// the straightening produces a too-clean 1/x curve that reads as CG.
+pub(super) const RIVER_MOUTH_FAN_BANK_WOBBLE_M: f32 = 3.0;
+/// Wavelength (m) of the Perlin noise driving the bank wobble. ~20 m
+/// gives a few visible cycles across a 68 m fan zone — organic without
+/// looking ridge-and-valley.
+pub(super) const RIVER_MOUTH_FAN_BANK_WOBBLE_WAVELENGTH_M: f32 = 20.0;
+/// Drop of the river-bed floor below `RIVER_CARVE_MIN_BED_Y_M` in the fan
+/// zone, proportional to width excess. At the fan peak the bed sits at
+/// `-RIVER_MOUTH_FAN_BED_DROP_M` so the channel reads as shallow sea —
+/// finger islands sit on this submerged plain and rise above sea level.
+pub(super) const RIVER_MOUTH_FAN_BED_DROP_M: f32 = 1.5;
 pub(super) const RIVER_SAND_WIDTH_MULT: f32 = 0.7;
 
 // --- Mouth finger-islands ------------------------------------------------
@@ -150,7 +157,7 @@ pub(super) const MOUTH_ISLAND_SPACING_M: f32 = 6.0;
 /// positions are spread. <1 leaves a margin near the channel banks so
 /// bars stay inside the visible water rather than poking into the
 /// taper zone.
-pub(super) const MOUTH_ISLAND_SPREAD_FRAC: f32 = 0.75;
+pub(super) const MOUTH_ISLAND_SPREAD_FRAC: f32 = 0.55;
 /// Lateral position jitter (m) on top of the evenly-spaced perpendicular
 /// offset so neighbouring bars don't read as a perfect lattice.
 pub(super) const MOUTH_ISLAND_PERP_JITTER_M: f32 = 1.5;
@@ -172,18 +179,15 @@ pub(super) const MOUTH_ISLAND_LAND_HEIGHT_BOOST: f32 = 0.3;
 /// from `smooth_island_area`'s Gaussian pass.
 pub(super) const MOUTH_ISLAND_PEAK_MIN_M: f32 = 1.1;
 pub(super) const MOUTH_ISLAND_PEAK_MAX_M: f32 = 1.5;
-/// Base elevation (m) at which a polyline vertex is considered the
-/// "apex" of its mouth — the last point still on land. Islands spawn
-/// downstream of here.
-pub(super) const MOUTH_ISLAND_APEX_ELEV_M: f32 = 0.4;
-/// Upstream-tip along-tangent bound from the apex. Small range bundles
-/// all tips into a "wrist" cluster — the fingers-of-a-hand silhouette.
-pub(super) const MOUTH_ISLAND_TIP_ALONG_MAX_M: f32 = 4.0;
-/// Downstream-end along-tangent range from the apex. Kept inside the
-/// pebble-wedge retraction zone (`RIVER_MOUTH_SAND_COAST_DIST_M = 50 m`)
-/// so the whole bar classifies as sand.
-pub(super) const MOUTH_ISLAND_END_ALONG_MIN_M: f32 = 16.0;
-pub(super) const MOUTH_ISLAND_END_ALONG_MAX_M: f32 = 30.0;
+/// Fractional along-fan position of each island's upstream tip and
+/// downstream end, measured from the fan apex (0) toward the polyline
+/// endpoint (1). Tips sitting around the mid-fan place island heads
+/// roughly halfway up the wedge — the visible "finger reach". Ends near
+/// the mouth keep the bars inside the deeply-carved water plane.
+pub(super) const MOUTH_ISLAND_TIP_ALONG_FRAC_MIN: f32 = 0.40;
+pub(super) const MOUTH_ISLAND_TIP_ALONG_FRAC_MAX: f32 = 0.55;
+pub(super) const MOUTH_ISLAND_END_ALONG_FRAC_MIN: f32 = 0.75;
+pub(super) const MOUTH_ISLAND_END_ALONG_FRAC_MAX: f32 = 0.95;
 /// Base spatial frequency (cycles per meter) of the along-river noise that
 /// widens and narrows the pebble/sand band so it doesn't read as a constant
 /// ribbon parallel to the centerline. ~1/22 gives ~22 m wavelength — short

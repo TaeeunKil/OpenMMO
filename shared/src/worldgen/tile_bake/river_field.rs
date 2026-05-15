@@ -30,12 +30,11 @@
 use super::super::global_map::GlobalMap;
 use super::super::vector_features::{project_point_to_segment, RiverSegment};
 use super::constants::{
-    HEIGHT_BIAS, HEIGHT_STEP, RIVER_CARVE_DEPTH_EXTRA_M, RIVER_CARVE_DEPTH_MIN_M,
-    RIVER_CARVE_MIN_BED_Y_M, RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M,
+    HEIGHT_BIAS, HEIGHT_STEP, RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M,
     RIVER_DEPTH_OFFSET_M, VERTS_PER_SIDE,
 };
 use super::context::BakeContext;
-use super::heightmap::{lerp, sample_natural_height_single};
+use super::heightmap::{lerp, sample_carved_bed};
 
 pub const RIVER_FIELD_BIN_MAGIC: &[u8; 4] = b"RFD1";
 pub const RIVER_FIELD_BIN_VERSION: u16 = 1;
@@ -88,18 +87,8 @@ pub fn bake_river_field(
             let wx = tile_origin_x + i as f32;
             let wz = tile_origin_z + j as f32;
             let bed_y = heights[j * VERTS_PER_SIDE + i];
-            let (surface_y, flow_x, flow_z) = compute_pixel(
-                wx,
-                wz,
-                bed_y,
-                map,
-                ctx,
-                heights,
-                tile_origin_x,
-                tile_origin_z,
-                river_segs,
-                &seg_tangents,
-            );
+            let (surface_y, flow_x, flow_z) =
+                compute_pixel(wx, wz, bed_y, map, ctx, river_segs, &seg_tangents);
             let v = ((surface_y + HEIGHT_BIAS) / HEIGHT_STEP)
                 .round()
                 .clamp(0.0, 65535.0) as u16;
@@ -190,9 +179,6 @@ fn compute_pixel(
     bed_y_pixel: f32,
     map: &GlobalMap,
     ctx: &BakeContext,
-    heights: &[f32],
-    tile_origin_x: f32,
-    tile_origin_z: f32,
     river_segs: &[RiverSegment],
     seg_tangents: &[(f32, f32)],
 ) -> (f32, f32, f32) {
@@ -204,21 +190,12 @@ fn compute_pixel(
     let seg = &river_segs[idx];
 
     // Surface = carved bed at the centerline projection + runtime offset.
-    // For in-tile projections, bilinear-sample the already-baked
-    // (post-carve) `heights` directly — at the centerline the carve has
-    // applied the full depth, so the post-carve sample IS the bed.
-    // For projections that escape the tile, fall back to natural sampling
-    // + the carve formula (rebuilds bed = natural − capped_depth).
+    // Re-evaluated via the global elevation pipeline so the value is
+    // independent of which tile owns the projection — in a delta wedge
+    // the projection can fall outside the tile being baked.
     let proj_x = lerp(seg.ax, seg.bx, t);
     let proj_z = lerp(seg.az, seg.bz, t);
-    let bed_at_proj = sample_in_tile(heights, tile_origin_x, tile_origin_z, proj_x, proj_z)
-        .unwrap_or_else(|| {
-            let natural = sample_natural_height_single(map, ctx, proj_x, proj_z);
-            let flow_norm = lerp(seg.flow_norm_a, seg.flow_norm_b, t);
-            let depth = RIVER_CARVE_DEPTH_MIN_M + RIVER_CARVE_DEPTH_EXTRA_M * flow_norm;
-            let capped = depth.min((natural - RIVER_CARVE_MIN_BED_Y_M).max(0.0));
-            natural - capped
-        });
+    let bed_at_proj = sample_carved_bed(map, ctx, proj_x, proj_z, river_segs);
     // Collapse the surface back to local bed beyond the carve's lateral
     // influence. Without this the polyline-projected `bed_at_proj` lifts
     // surfaceY above any pixel that happens to be far from the river but
@@ -242,38 +219,6 @@ fn compute_pixel(
     };
 
     (surface_y, flow_x, flow_z)
-}
-
-/// Bilinear-sample the local `heights` array at world `(wx, wz)`. Returns
-/// `None` when the position lies outside the tile — caller falls back
-/// to a global sampler.
-#[inline]
-fn sample_in_tile(
-    heights: &[f32],
-    tile_origin_x: f32,
-    tile_origin_z: f32,
-    wx: f32,
-    wz: f32,
-) -> Option<f32> {
-    let lx = wx - tile_origin_x;
-    let lz = wz - tile_origin_z;
-    let max = (VERTS_PER_SIDE - 1) as f32;
-    if lx < 0.0 || lz < 0.0 || lx > max || lz > max {
-        return None;
-    }
-    let i0 = lx.floor() as usize;
-    let j0 = lz.floor() as usize;
-    let fx = lx - i0 as f32;
-    let fz = lz - j0 as f32;
-    let i1 = (i0 + 1).min(VERTS_PER_SIDE - 1);
-    let j1 = (j0 + 1).min(VERTS_PER_SIDE - 1);
-    let h00 = heights[j0 * VERTS_PER_SIDE + i0];
-    let h10 = heights[j0 * VERTS_PER_SIDE + i1];
-    let h01 = heights[j1 * VERTS_PER_SIDE + i0];
-    let h11 = heights[j1 * VERTS_PER_SIDE + i1];
-    let h0 = h00 * (1.0 - fx) + h10 * fx;
-    let h1 = h01 * (1.0 - fx) + h11 * fx;
-    Some(h0 * (1.0 - fz) + h1 * fz)
 }
 
 #[cfg(test)]
@@ -362,12 +307,7 @@ mod tests {
         // collapses to the local bed so the shader's depth-fade hides the
         // river instead of letting it spill into surrounding lower terrain.
         let (map, ctx) = small_test_ctx();
-        let mut heights = vec![5.0f32; VERTS_PER_SIDE * VERTS_PER_SIDE];
-        // Stamp a deeper centerline so bed_at_proj differs from bed_y_pixel:
-        // row z=32 (the segment's z) carved to 1.0m, rest stays at 5m.
-        for i in 0..VERTS_PER_SIDE {
-            heights[32 * VERTS_PER_SIDE + i] = 1.0;
-        }
+        let heights = vec![5.0f32; VERTS_PER_SIDE * VERTS_PER_SIDE];
         let segs = vec![RiverSegment {
             ax: -32.0,
             az: 0.0,
@@ -393,13 +333,12 @@ mod tests {
         let on_axis = pixel_surface(32, 32);
         let inside_half_width = pixel_surface(32, 33);
         let far = pixel_surface(32, 60);
+        // bed_at_proj is now sampled from the global elevation field at
+        // the same projection point for both readings inside the
+        // channel, so the surface stays flat across the channel width.
         assert!(
-            (on_axis - 1.5).abs() < 0.1,
-            "on-axis surface should be bed_at_proj (1.0m) + offset (0.5m), got {on_axis}"
-        );
-        assert!(
-            (inside_half_width - 1.5).abs() < 0.1,
-            "inside half_width surface stays at the river level, got {inside_half_width}"
+            (on_axis - inside_half_width).abs() < 0.01,
+            "surface stays flat inside the channel: on_axis={on_axis}, inside={inside_half_width}"
         );
         assert!(
             (far - 5.0).abs() < 0.1,
@@ -414,5 +353,59 @@ mod tests {
         let flow_z = bin[off + 3] as i8;
         assert!(flow_x > 100, "far pixel should still carry flowX, got {flow_x}");
         assert!(flow_z.abs() < 10, "flowZ should stay near 0, got {flow_z}");
+    }
+
+    #[test]
+    fn surface_continuous_across_tile_boundary() {
+        // Two adjacent tiles baked with the same river polyline must
+        // emit byte-identical surfaceY/flow on their shared edge.
+        // Wide segments (`width_a/b = 50` ≫ natural max) force
+        // `mouth_fan_bed_floor` into its fan-drop branch — the path
+        // where the pre-fix bake diverged between in-tile bilinear and
+        // out-of-tile fallback.
+        let (map, ctx) = small_test_ctx();
+        let heights = vec![5.0f32; VERTS_PER_SIDE * VERTS_PER_SIDE];
+        // Polyline parallel to the tile boundary at world x=33, just
+        // inside tile B (origin x=32). For pixels on tile A's right
+        // edge (world x=32), the projection lands at x=33 — outside
+        // tile A but inside tile B.
+        let segs = vec![
+            RiverSegment {
+                ax: 33.0,
+                az: -30.0,
+                bx: 33.0,
+                bz: 0.0,
+                flow_norm_a: 0.8,
+                flow_norm_b: 0.8,
+                width_a: 50.0,
+                width_b: 50.0,
+            },
+            RiverSegment {
+                ax: 33.0,
+                az: 0.0,
+                bx: 33.0,
+                bz: 30.0,
+                flow_norm_a: 0.8,
+                flow_norm_b: 0.8,
+                width_a: 50.0,
+                width_b: 50.0,
+            },
+        ];
+        let bin_a = bake_river_field(&map, &ctx, &heights, -32.0, -32.0, &segs)
+            .expect("non-empty segments produce a file");
+        let bin_b = bake_river_field(&map, &ctx, &heights, 32.0, -32.0, &segs)
+            .expect("non-empty segments produce a file");
+        let last_col = VERTS_PER_SIDE - 1;
+        for j in 0..VERTS_PER_SIDE {
+            let a_off = RIVER_FIELD_HEADER_SIZE
+                + (j * VERTS_PER_SIDE + last_col) * RIVER_FIELD_PIXEL_SIZE;
+            let b_off =
+                RIVER_FIELD_HEADER_SIZE + (j * VERTS_PER_SIDE) * RIVER_FIELD_PIXEL_SIZE;
+            assert_eq!(
+                &bin_a[a_off..a_off + RIVER_FIELD_PIXEL_SIZE],
+                &bin_b[b_off..b_off + RIVER_FIELD_PIXEL_SIZE],
+                "tile A right edge != tile B left edge at j={j}"
+            );
+        }
     }
 }

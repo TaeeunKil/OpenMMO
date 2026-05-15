@@ -10,7 +10,8 @@ use super::constants::{
     DETAIL_MIN_AMPLITUDE, DETAIL_OCTAVES, HEIGHT_BIAS, HEIGHT_STEP, HILLS_AMPLITUDE_M,
     HILLS_COASTAL_FADE_M, HILLS_FREQUENCY, HILLS_GAIN, HILLS_OCTAVES, LAND_BASE_MIN_Y_M,
     RIVER_CARVE_DEPTH_EXTRA_M, RIVER_CARVE_DEPTH_MIN_M, RIVER_CARVE_MIN_BED_Y_M,
-    RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M, TILE_DIM, VERTS_PER_SIDE,
+    RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M, RIVER_MAX_WIDTH_M,
+    RIVER_MOUTH_FAN_BED_DROP_M, RIVER_MOUTH_FAN_EXTRA, TILE_DIM, VERTS_PER_SIDE,
 };
 use super::context::{BakeContext, MouthIsland};
 
@@ -61,14 +62,15 @@ pub(super) fn sample_tile_heights_no_carve(
 /// Per-vertex river carve subtraction. Runs after settlement flattening
 /// so the carve cuts through the settlement pad too — the channel keeps
 /// its natural depth even where the pad raised the surrounding terrain.
-/// `max_carve_depth` is computed against the *current* (post-flatten)
-/// height so the bed floor stays at `RIVER_CARVE_MIN_BED_Y_M`.
+/// Mouth-island bumps are stripped before sizing the cut and re-added
+/// on top so a bar's peak stays above the carved bed.
 pub(super) fn apply_river_carve_to_tile(
     heights: &mut [f32],
     map: &GlobalMap,
     tile_origin_x: f32,
     tile_origin_z: f32,
     river_segs: &[RiverSegment],
+    mouth_islands: &[MouthIsland],
 ) {
     if river_segs.is_empty() {
         return;
@@ -80,9 +82,29 @@ pub(super) fn apply_river_carve_to_tile(
             let wz = tile_origin_z + j as f32;
             let idx = j * VERTS_PER_SIDE + i;
             let h = heights[idx];
-            heights[idx] = (h - carve_at_point(wx, wz, h, river_segs)).clamp(-HEIGHT_BIAS, max_cap);
+            let bump = max_island_bump_at(wx, wz, mouth_islands);
+            let natural = h - bump;
+            let carve = carve_at_point(wx, wz, natural, river_segs);
+            heights[idx] = (natural - carve + bump).clamp(-HEIGHT_BIAS, max_cap);
         }
     }
+}
+
+#[inline]
+fn max_island_bump_at(wx: f32, wz: f32, islands: &[MouthIsland]) -> f32 {
+    let mut bump = 0.0f32;
+    for island in islands {
+        if (wx - island.center[0]).abs() > island.reach_m
+            || (wz - island.center[1]).abs() > island.reach_m
+        {
+            continue;
+        }
+        let h = island.bump_m(wx, wz);
+        if h > bump {
+            bump = h;
+        }
+    }
+    bump
 }
 
 /// 3×3 Gaussian approximation, σ ≈ 0.85, sum = 16.
@@ -198,7 +220,10 @@ pub(super) fn sample_height_single(map: &GlobalMap, ctx: &BakeContext, wx: f32, 
         RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M, RIVER_FADE_SPAN_M, RIVER_MAX_WIDTH_M,
         RIVER_SAND_WIDTH_MULT,
     };
-    let max_half = RIVER_MAX_WIDTH_M * 0.5;
+    // Peak fan-flared half-width drives the margin so cells far from the
+    // polyline (in a wide mouth wedge) still see the segment they're
+    // perpendicular to.
+    let max_half = RIVER_MAX_WIDTH_M * (1.0 + RIVER_MOUTH_FAN_EXTRA) * 0.5;
     let max_taper = RIVER_CARVE_TAPER_MIN_M + RIVER_CARVE_TAPER_EXTRA_M;
     let max_sand_half = RIVER_MAX_WIDTH_M * RIVER_SAND_WIDTH_MULT;
     let river_margin = (max_half + max_taper).max(max_sand_half + RIVER_FADE_SPAN_M);
@@ -315,6 +340,24 @@ fn sample_elevation_no_carve(
     (pre_carve + island_bump).clamp(-HEIGHT_BIAS, max_cap)
 }
 
+/// Carved bed elevation at `(wx, wz)` using the caller's pre-filtered
+/// river-segment list — same formula that produced the tile heightmap.
+/// `river_field` calls this for each centerline projection so the value
+/// is independent of which tile owns the projection, preventing a
+/// `surfaceY` step at delta tile boundaries.
+#[inline]
+pub(super) fn sample_carved_bed(
+    map: &GlobalMap,
+    ctx: &BakeContext,
+    wx: f32,
+    wz: f32,
+    river_segs: &[RiverSegment],
+) -> f32 {
+    let world_size = map.config.world_size_m as f32;
+    let inv_mpc = 1.0 / map.config.meters_per_cell();
+    sample_elevation_m(map, ctx, wx, wz, world_size, inv_mpc, river_segs, &[])
+}
+
 /// Bilinear-sample the global elevation at a world position, convert sea
 /// cells into a shallow bathymetry curve, add high-frequency detail, and
 /// subtract a polyline-distance river carve.
@@ -328,24 +371,22 @@ fn sample_elevation_m(
     river_segs: &[RiverSegment],
     mouth_islands: &[MouthIsland],
 ) -> f32 {
-    let natural = sample_elevation_no_carve(
-        map,
-        ctx,
-        world_x,
-        world_z,
-        world_size,
-        inv_mpc,
-        mouth_islands,
-    );
+    let natural =
+        sample_elevation_no_carve(map, ctx, world_x, world_z, world_size, inv_mpc, &[]);
     let carve = carve_at_point(world_x, world_z, natural, river_segs);
+    let bump = max_island_bump_at(world_x, world_z, mouth_islands);
     let max_cap = map.config.max_elevation_m;
-    (natural - carve).clamp(-HEIGHT_BIAS, max_cap)
+    (natural - carve + bump).clamp(-HEIGHT_BIAS, max_cap)
 }
 
 /// River carve depth (m, ≥0) to subtract from `current_h` at the given world
 /// point. Cap on `depth` (rather than the post-taper carve) keeps the
 /// channel floor at `RIVER_CARVE_MIN_BED_Y_M` while preserving the lateral
-/// taper gradient the river shader needs for edge fade.
+/// taper gradient the river shader needs for edge fade. Inside the mouth
+/// fan zone (detected via width excess over the natural max), the floor
+/// drops below sea level so the channel reads as shallow-sea bathymetry
+/// — finger islands' upstream tips can then sit on that submerged plain
+/// and rise above the waterline as visible bars.
 #[inline]
 fn carve_at_point(world_x: f32, world_z: f32, current_h: f32, segs: &[RiverSegment]) -> f32 {
     let Some((d, idx, t)) = nearest_river_segment(world_x, world_z, segs) else {
@@ -355,7 +396,8 @@ fn carve_at_point(world_x: f32, world_z: f32, current_h: f32, segs: &[RiverSegme
     let flow_norm = lerp(seg.flow_norm_a, seg.flow_norm_b, t);
     let width = lerp(seg.width_a, seg.width_b, t);
     let (half_width, taper, depth) = segment_carve_params(flow_norm, width);
-    let max_carve_depth = (current_h - RIVER_CARVE_MIN_BED_Y_M).max(0.0);
+    let bed_floor = mouth_fan_bed_floor(width);
+    let max_carve_depth = (current_h - bed_floor).max(0.0);
     let signed_d = signed_distance_to_segment(world_x, world_z, seg, t);
     let outside_strength = bend_outside_strength(segs, idx, t);
     river_carve_capped_m(
@@ -367,6 +409,18 @@ fn carve_at_point(world_x: f32, world_z: f32, current_h: f32, segs: &[RiverSegme
         depth,
         max_carve_depth,
     )
+}
+
+/// Bed-floor target in meters as a function of vertex width. At natural
+/// widths returns `RIVER_CARVE_MIN_BED_Y_M`; as the flare pushes width
+/// past `RIVER_MAX_WIDTH_M` the floor drops linearly to
+/// `RIVER_CARVE_MIN_BED_Y_M - RIVER_MOUTH_FAN_BED_DROP_M` at the fan peak.
+#[inline]
+fn mouth_fan_bed_floor(width_m: f32) -> f32 {
+    let excess = (width_m - RIVER_MAX_WIDTH_M).max(0.0);
+    let max_excess = RIVER_MAX_WIDTH_M * RIVER_MOUTH_FAN_EXTRA;
+    let frac = (excess / max_excess.max(1e-3)).clamp(0.0, 1.0);
+    RIVER_CARVE_MIN_BED_Y_M - RIVER_MOUTH_FAN_BED_DROP_M * frac
 }
 
 #[inline]

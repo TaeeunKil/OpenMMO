@@ -73,39 +73,6 @@ const MEANDER_ANCHOR_TAPER_CELLS: f32 = 80.0;
 const MEANDER_SLOPE_LOW: f32 = 0.025;
 const MEANDER_SLOPE_HIGH: f32 = 0.14;
 
-/// Only rivers with apex flow at or above this fraction of the global
-/// max get deltaized. Small streams reach the sea as a single channel.
-const DISTRIBUTARY_FLOW_FRAC_OF_MAX: f32 = 0.05;
-/// Forward log2 flow→width mapping range used when assigning child-branch
-/// flows. Must match `tile_bake/constants.rs::RIVER_{MIN,MAX}_WIDTH_M`,
-/// which is what the bake re-derives per vertex. Defined here (not
-/// imported) because `tile_bake` already depends on `rivers` — importing
-/// back would create a cycle.
-const DISTRIBUTARY_WIDTH_MIN_M: f32 = 1.5;
-const DISTRIBUTARY_WIDTH_MAX_M: f32 = 10.0;
-/// Apex sits this many cells back from the river mouth (measured along
-/// the polyline arc, not Euclidean). The original trunk is truncated at
-/// the apex; distributary branches sprout from there.
-const DISTRIBUTARY_APEX_OFFSET_CELLS: f32 = 8.5;
-/// Maximum apex-to-mouth slope for a delta. Real deltas form on near-flat
-/// coastal plains where the channel can't choose a single dominant path.
-const DISTRIBUTARY_SLOPE_MAX: f32 = 0.015;
-/// Branch endpoints must lie within this radius (Euclidean cells) of
-/// the apex. Smaller radius = tighter fan, larger = wider spread.
-const DISTRIBUTARY_SEARCH_RADIUS_CELLS: f32 = 35.0;
-/// Branch endpoints must be at least this far from the apex; prevents
-/// branches collapsing into a single short stub when the apex is right
-/// on the coast.
-const DISTRIBUTARY_SEARCH_MIN_RADIUS_CELLS: f32 = 16.0;
-/// Half-angle (radians) of the forward arc inside which we look for
-/// branch endpoints. ~0.7 rad ≈ 40° → total fan span of ~80°.
-const DISTRIBUTARY_HALF_ARC_RAD: f32 = 0.7;
-/// Number of distributary branches to spawn per delta. Real systems run
-/// from 2 (simple bifurcation) through 4–5 (full birdfoot). Three is a
-/// readable middle ground that avoids both the "Y-fork" simplicity of 2
-/// and the visual clutter of 5.
-const DISTRIBUTARY_BRANCH_COUNT: usize = 3;
-
 #[derive(Clone, Copy)]
 struct MergeClaim {
     target: u32,
@@ -887,7 +854,6 @@ pub fn extract_rivers(
         }
     }
 
-    synthesize_distributary_deltas(map, &mut rivers.rivers);
     naturalize_river_meanders(map, &mut rivers.rivers);
     remove_polyline_self_overlaps(&mut rivers.rivers);
     merge_overlapping_polylines(map, &mut rivers.rivers);
@@ -949,12 +915,9 @@ fn remove_polyline_self_overlaps(rivers: &mut [Polyline]) {
 const MERGE_PROXIMITY_RADIUS_CELLS: i32 = 2;
 
 /// Number of vertices at each polyline endpoint exempt from the
-/// proximity check. Distributary fans share an apex cell across 2–3
-/// branches that diverge by ~40°; the first few cells of those branches
-/// are unavoidably close to each other. With a ±40° fan, by the eighth
-/// cell from apex adjacent branches are ~5.4 cells apart, comfortably
-/// outside `MERGE_PROXIMITY_RADIUS`. Keep this >= the radius times the
-/// distance ratio for the tightest fan you expect to support.
+/// proximity check. Tributary junctions are *meant* to share cells with
+/// the trunk they merge into, so the first/last few vertices of each
+/// polyline bypass the proximity merge.
 const MERGE_ENDPOINT_EXEMPT_VERTICES: usize = 8;
 
 /// Resolve crossings and visually-overlapping parallel reaches caused
@@ -967,9 +930,7 @@ const MERGE_ENDPOINT_EXEMPT_VERTICES: usize = 8;
 ///
 /// The first / last `MERGE_ENDPOINT_EXEMPT_VERTICES` vertices on each
 /// polyline are exempt from the check — junction cells are *meant* to
-/// be shared between trunks and tributaries, and distributary fans by
-/// construction have all branches start very close to a shared apex
-/// before fanning out.
+/// be shared between trunks and tributaries.
 fn merge_overlapping_polylines(map: &GlobalMap, rivers: &mut Vec<Polyline>) {
     if rivers.is_empty() {
         return;
@@ -1042,214 +1003,6 @@ fn merge_overlapping_polylines(map: &GlobalMap, rivers: &mut Vec<Polyline>) {
     rivers.retain(|p| p.points.len() >= 2);
 }
 
-/// Branch each qualifying main river into a distributary fan at its
-/// mouth. A river qualifies if it (a) reaches the sea, (b) carries
-/// flow above a fraction of the global max, and (c) the apex-to-mouth
-/// reach is near-flat. The original trunk is truncated at the apex
-/// and 2–`DISTRIBUTARY_BRANCH_COUNT` straight branches are appended,
-/// each ending at a sea cell within the forward fan. Subsequent
-/// `naturalize_river_meanders` smooths the new branches into curves.
-fn synthesize_distributary_deltas(map: &GlobalMap, rivers: &mut Vec<Polyline>) {
-    let res = map.config.global_res as usize;
-    let res_i = res as i32;
-    let mpc = map.config.meters_per_cell();
-    let max_flow = polylines_max_flow(rivers);
-    let flow_threshold = max_flow * DISTRIBUTARY_FLOW_FRAC_OF_MAX;
-    let log_max = max_flow.max(1.0).log2().max(1e-3);
-    let width_span = DISTRIBUTARY_WIDTH_MAX_M - DISTRIBUTARY_WIDTH_MIN_M;
-    let cos_half_arc = DISTRIBUTARY_HALF_ARC_RAD.cos();
-    let r_max = DISTRIBUTARY_SEARCH_RADIUS_CELLS;
-    let r_min = DISTRIBUTARY_SEARCH_MIN_RADIUS_CELLS;
-    let r_max_i = r_max.ceil() as i32;
-    let slice_width = 2.0 * DISTRIBUTARY_HALF_ARC_RAD / DISTRIBUTARY_BRANCH_COUNT as f32;
-
-    let mut new_polys: Vec<Polyline> = Vec::new();
-    let mut truncate_to: Vec<Option<usize>> = vec![None; rivers.len()];
-
-    for (ri, poly) in rivers.iter().enumerate() {
-        let n = poly.points.len();
-        if n < 6 {
-            continue;
-        }
-        // Mouth must sit on a sea cell.
-        let mouth = poly.points[n - 1];
-        if map.land_mask[mouth.1 as usize * res + mouth.0 as usize] != 0 {
-            continue;
-        }
-
-        let cumulative = cumulative_lengths_cells(&poly.points, res);
-        let total_len = *cumulative.last().unwrap_or(&0.0);
-        let target_len = total_len - DISTRIBUTARY_APEX_OFFSET_CELLS;
-        if target_len <= 5.0 {
-            continue;
-        }
-
-        // Walk back to the first vertex whose cumulative arc-length is
-        // at or below `target_len` — that's the apex.
-        let mut apex_idx = 0usize;
-        for i in (0..n).rev() {
-            if cumulative[i] <= target_len {
-                apex_idx = i;
-                break;
-            }
-        }
-        if apex_idx == 0 || apex_idx >= n - 1 {
-            continue;
-        }
-        let apex = poly.points[apex_idx];
-        if map.land_mask[apex.1 as usize * res + apex.0 as usize] != 1 {
-            continue;
-        }
-
-        // Flow gate: only sizable rivers form distributary deltas.
-        if poly.flow[apex_idx] < flow_threshold {
-            continue;
-        }
-
-        // Forward direction = apex → mouth (tangent at apex toward sea).
-        let dx_fwd = fold_x_delta(mouth.0 as i32 - apex.0 as i32, res_i) as f32;
-        let dy_fwd = mouth.1 as f32 - apex.1 as f32;
-        let fwd_len = (dx_fwd * dx_fwd + dy_fwd * dy_fwd).sqrt();
-        if fwd_len < 1.0 {
-            continue;
-        }
-        let fx = dx_fwd / fwd_len;
-        let fy = dy_fwd / fwd_len;
-
-        // Slope gate: deltas only on near-flat coastal plains.
-        let elev_apex = map.elevation_m[apex.1 as usize * res + apex.0 as usize];
-        let slope = elev_apex / (fwd_len * mpc).max(1.0);
-        if slope > DISTRIBUTARY_SLOPE_MAX {
-            continue;
-        }
-
-        // Sweep the forward sector for sea cells; for each angular slice
-        // keep the closest valid candidate. Annulus filter prevents
-        // collapsing branches and absurdly long ones; arc filter keeps
-        // them in front of the apex rather than behind.
-        let mut slice_best: [Option<((u32, u32), f32)>; DISTRIBUTARY_BRANCH_COUNT] =
-            [None; DISTRIBUTARY_BRANCH_COUNT];
-        for ddy in -r_max_i..=r_max_i {
-            let cy_i = apex.1 as i32 + ddy;
-            if cy_i < 0 || cy_i >= res_i {
-                continue;
-            }
-            for ddx in -r_max_i..=r_max_i {
-                let cx_i = (apex.0 as i32 + ddx).rem_euclid(res_i);
-                if map.land_mask[cy_i as usize * res + cx_i as usize] != 0 {
-                    continue;
-                }
-                let dx = ddx as f32;
-                let dy = ddy as f32;
-                let d = (dx * dx + dy * dy).sqrt();
-                if d < r_min || d > r_max {
-                    continue;
-                }
-                let cos_angle = (dx * fx + dy * fy) / d;
-                if cos_angle < cos_half_arc {
-                    continue;
-                }
-                let sin_angle = (fx * dy - fy * dx) / d;
-                let angle = sin_angle.atan2(cos_angle);
-                let slice_idx = (((angle + DISTRIBUTARY_HALF_ARC_RAD) / slice_width).floor()
-                    as i32)
-                    .clamp(0, DISTRIBUTARY_BRANCH_COUNT as i32 - 1)
-                    as usize;
-                let take = slice_best[slice_idx].map_or(true, |(_, prev_d)| d < prev_d);
-                if take {
-                    slice_best[slice_idx] = Some(((cx_i as u32, cy_i as u32), d));
-                }
-            }
-        }
-
-        let valid_count = slice_best.iter().filter(|s| s.is_some()).count();
-        if valid_count < 2 {
-            // Coastline geometry doesn't support a fan here; leave the
-            // river as a single mouth.
-            continue;
-        }
-
-        truncate_to[ri] = Some(apex_idx);
-
-        // Width-conserving split: every branch carries parent flow at the
-        // apex then tapers to child flow (= parent width / N inverted back
-        // through the log2 mapping) so the bake reads a single wide cell
-        // at the bifurcation and N narrower channels downstream. Without
-        // this the per-vertex log2 mapping renders all branches at near-
-        // trunk width, overlapping into a single wide stream.
-        let parent_flow_at_apex = poly.flow[apex_idx];
-        let parent_width_m = {
-            let t = (parent_flow_at_apex.max(1.0).log2() / log_max).clamp(0.0, 1.0);
-            DISTRIBUTARY_WIDTH_MIN_M + width_span * t
-        };
-        let child_width_m =
-            (parent_width_m / valid_count as f32).max(DISTRIBUTARY_WIDTH_MIN_M);
-        let child_flow = {
-            let t = ((child_width_m - DISTRIBUTARY_WIDTH_MIN_M) / width_span).clamp(0.0, 1.0);
-            (2.0f32).powf(t * log_max).max(1.0)
-        };
-
-        // `spread_step_cells` minimum of 1.5 cells: diagonal river orientations
-        // put perpendicular axes at ~0.7, so smaller spacing rounds adjacent
-        // branch starts onto the same cell and they visually stack.
-        let spread_step_cells = (child_width_m * 1.5 / mpc.max(0.1)).max(1.5);
-        let forward_taper_cells = 2.0f32;
-        let nx = -fy;
-        let ny = fx;
-        let center_idx = (DISTRIBUTARY_BRANCH_COUNT as f32 - 1.0) * 0.5;
-        let apex_x = apex.0 as f32;
-        let apex_y = apex.1 as f32;
-
-        for (slice_idx, slot) in slice_best.iter().enumerate() {
-            let Some((sea_pt, _)) = *slot else { continue };
-            let lat = (slice_idx as f32 - center_idx) * spread_step_cells;
-            let mid_xf = apex_x + forward_taper_cells * fx + lat * nx;
-            let mid_yf = apex_y + forward_taper_cells * fy + lat * ny;
-            let mid_x = (mid_xf.round() as i32).rem_euclid(res_i) as u32;
-            let mid_y = (mid_yf.round() as i32).clamp(0, res_i - 1) as u32;
-            let mid_pt = (mid_x, mid_y);
-
-            let mut pts: Vec<(u32, u32)> = vec![apex];
-            let mut flows: Vec<f32> = vec![parent_flow_at_apex];
-            if mid_pt != apex {
-                append_wrapped_line(
-                    &mut pts,
-                    &mut flows,
-                    apex,
-                    mid_pt,
-                    parent_flow_at_apex,
-                    child_flow,
-                    res,
-                );
-            }
-            let last = *pts.last().unwrap();
-            if last != sea_pt {
-                append_wrapped_line(
-                    &mut pts,
-                    &mut flows,
-                    last,
-                    sea_pt,
-                    child_flow,
-                    child_flow,
-                    res,
-                );
-            }
-            if pts.len() >= 2 {
-                new_polys.push(Polyline { points: pts, flow: flows });
-            }
-        }
-    }
-
-    // Apply truncations after the analysis pass so the loop above never
-    // sees a half-edited polyline.
-    for (ri, cut) in truncate_to.iter().enumerate() {
-        if let Some(end_inclusive) = *cut {
-            rivers[ri].points.truncate(end_inclusive + 1);
-            rivers[ri].flow.truncate(end_inclusive + 1);
-        }
-    }
-    rivers.extend(new_polys);
-}
 
 #[cfg(test)]
 mod tests {

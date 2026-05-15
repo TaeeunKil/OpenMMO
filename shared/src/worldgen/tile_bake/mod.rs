@@ -43,7 +43,8 @@ pub use river_field::bake_river_field;
 
 use constants::{
     COAST_FADE_SPAN_M, COAST_SAND_M, RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M,
-    RIVER_FADE_SPAN_M, RIVER_SAND_WIDTH_MULT, ROAD_FADE_SPAN_M, ROAD_HALF_WIDTH_M,
+    RIVER_FADE_SPAN_M, RIVER_MOUTH_FAN_EXTRA, RIVER_SAND_WIDTH_MULT, ROAD_FADE_SPAN_M,
+    ROAD_HALF_WIDTH_M,
 };
 use heightmap::{apply_river_carve_to_tile, encode_heightmap, sample_tile_heights_no_carve};
 use splatmap::bake_splatmap;
@@ -87,8 +88,12 @@ pub fn bake_tile_with_bridges(
     // Margin = largest radius at which any river segment can still affect
     // this tile (carve taper or splat fade). Computed from the global
     // maxima — a tile with only narrow source streams still uses the
-    // worldwide reach so neighbors agree on the shared cells.
-    let max_half_width = RIVER_MAX_WIDTH_M * 0.5;
+    // worldwide reach so neighbors agree on the shared cells. The fan
+    // flare at the mouth pushes the effective half-width to
+    // `MAX_WIDTH * (1 + FAN_EXTRA)`; clipping the margin to the natural
+    // max would drop adjacent-tile segments inside wide wedges and leave
+    // seams in the visible bank.
+    let max_half_width = RIVER_MAX_WIDTH_M * (1.0 + RIVER_MOUTH_FAN_EXTRA) * 0.5;
     let max_taper = RIVER_CARVE_TAPER_MIN_M + RIVER_CARVE_TAPER_EXTRA_M;
     let max_sand_half_width = RIVER_MAX_WIDTH_M * RIVER_SAND_WIDTH_MULT;
     let river_margin = (max_half_width + max_taper).max(max_sand_half_width + RIVER_FADE_SPAN_M);
@@ -154,7 +159,14 @@ pub fn bake_tile_with_bridges(
             &ctx.detail_noise,
         );
     }
-    apply_river_carve_to_tile(&mut heights, map, tile_min_x, tile_min_z, &river_segs);
+    apply_river_carve_to_tile(
+        &mut heights,
+        map,
+        tile_min_x,
+        tile_min_z,
+        &river_segs,
+        &mouth_islands,
+    );
     if !bridge_flattens.is_empty() {
         bridges::apply_bridge_flatten(&mut heights, tile_min_x, tile_min_z, bridge_flattens);
     }
@@ -336,4 +348,5 @@ mod tests {
             );
         }
     }
+
 }
