@@ -125,7 +125,7 @@ pub fn compute_roads(
     let res_usize = map.config.global_res as usize;
     let total = res_usize.pow(2);
     let mut scratch = AStarScratch::new(total);
-    let river_field = RiverField::from_polylines(&river_map.rivers, res_usize);
+    let river_field = RiverField::from_river_map(river_map, map);
     let mut road_mask = vec![0u8; total];
     let mut roads = Vec::with_capacity(edges.len());
     for (a, b) in edges {

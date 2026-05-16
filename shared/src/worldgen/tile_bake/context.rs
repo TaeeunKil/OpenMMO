@@ -27,8 +27,9 @@ use super::constants::{
     MOUTH_ISLAND_TIP_RADIUS_FRAC, MOUTH_ISLAND_WIDEST_AXIS_T, RIVER_CHAIKIN_ITERATIONS,
     RIVER_MAX_WIDTH_M, RIVER_MIN_WIDTH_M, RIVER_MOUTH_FAN_ARC_CELLS,
     RIVER_MOUTH_FAN_BANK_WOBBLE_M, RIVER_MOUTH_FAN_BANK_WOBBLE_WAVELENGTH_M,
-    RIVER_MOUTH_FAN_EXTRA, RIVER_MOUTH_FAN_SHARPNESS, ROAD_CHAIKIN_ITERATIONS,
+    ROAD_CHAIKIN_ITERATIONS,
 };
+use super::river_geom::mouth_fan_factor;
 use super::heightmap::{cell_elevation_m, lerp};
 
 pub struct BakeContext {
@@ -370,11 +371,7 @@ fn apply_mouth_fan_widths(
     map: &GlobalMap,
     dist_to_land: &[u16],
 ) {
-    let k = RIVER_MOUTH_FAN_SHARPNESS;
-    let s_norm = (1.0 + k) / k;
-    let inv_one_plus_k = 1.0 / (1.0 + k);
     let arc_m = RIVER_MOUTH_FAN_ARC_CELLS * map.config.meters_per_cell();
-    let inv_arc = 1.0 / arc_m.max(1e-3);
     let bank_noise = PerlinNoise3D::new(map.config.seed ^ 0xB44E_5099_F1A8_C3D7);
     let wobble_freq = 1.0 / RIVER_MOUTH_FAN_BANK_WOBBLE_WAVELENGTH_M.max(1e-3);
 
@@ -441,9 +438,7 @@ fn apply_mouth_fan_widths(
         }
 
         for i in 0..n {
-            let t = ((total - lens[i]) * inv_arc).clamp(0.0, 1.0);
-            let s = (1.0 / (k * t + 1.0) - inv_one_plus_k) * s_norm;
-            poly.width[i] *= 1.0 + RIVER_MOUTH_FAN_EXTRA * s;
+            poly.width[i] *= mouth_fan_factor((total - lens[i]) / arc_m.max(1e-3));
         }
     }
 }

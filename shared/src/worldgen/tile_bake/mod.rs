@@ -22,6 +22,7 @@
 
 pub mod bridges;
 mod constants;
+pub mod river_geom;
 mod context;
 mod heightmap;
 mod river_field;

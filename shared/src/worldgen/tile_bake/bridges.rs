@@ -38,18 +38,13 @@ use super::super::vector_features::{nearest_river_segment, river_segments_near_t
 use super::constants::{TILE_DIM, VERTS_PER_SIDE};
 use super::context::BakeContext;
 use super::heightmap::sample_natural_height_single;
+use super::river_geom::{baked_to_visible_width, BRIDGE_MAX_VISIBLE_WIDTH_M};
 use super::settlement_flatten::{flatten_height_at, SettlementFlatten};
 
 /// Width threshold (rendered ribbon meters) above which the wider bridge
 /// model is selected. Matches the user-facing river width, not the baked
-/// segment width — `width_visible = width_baked * 1.5 + 2.0` per the client
-/// ribbon geometry.
+/// segment width.
 const BRIDGE_WIDE_RIBBON_M: f32 = 14.0;
-
-/// Render-side ribbon adjustments — keep in sync with `river-geometry.ts`'s
-/// `RIVER_WIDTH_SCALE` and `RIVER_WIDTH_PAD_M`.
-const RIVER_RIBBON_WIDTH_SCALE: f32 = 1.5;
-const RIVER_RIBBON_WIDTH_PAD_M: f32 = 1.0;
 
 /// Smoothstep blend distance (m) past the rotated deck rect, matching the
 /// editor's `FLATTEN_BLEND_RADIUS = 2`.
@@ -233,8 +228,13 @@ pub fn detect_bridges(
                 None => continue,
             };
 
-            let visible_width =
-                baked_width * RIVER_RIBBON_WIDTH_SCALE + RIVER_RIBBON_WIDTH_PAD_M * 2.0;
+            let visible_width = baked_to_visible_width(baked_width);
+            // Safety net for the rare case where a road still threads a
+            // wide cell — A* exempts start/goal endpoints from its
+            // wide-river impassability mask.
+            if visible_width > BRIDGE_MAX_VISIBLE_WIDTH_M {
+                continue;
+            }
             let model = catalog.pick(visible_width);
 
             let perp_x = -rt_dz;

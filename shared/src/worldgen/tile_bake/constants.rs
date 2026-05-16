@@ -121,7 +121,7 @@ pub(super) const RIVER_FAN_SAND_FADE_M: f32 = 3.0;
 /// with `k = SHARPNESS` and `t = arc_distance_from_mouth / window`:
 /// `s(1)=0` at the wedge start, `s(0)=1` at the mouth. Higher `k` ⇒
 /// flatter upstream + sharper flare at the coast.
-pub(super) const RIVER_MOUTH_FAN_ARC_CELLS: f32 = 8.5;
+pub const RIVER_MOUTH_FAN_ARC_CELLS: f32 = 8.5;
 pub(super) const RIVER_MOUTH_FAN_EXTRA: f32 = 10.0;
 pub(super) const RIVER_MOUTH_FAN_SHARPNESS: f32 = 1.5;
 /// Perpendicular bank wobble (m) added per fan-zone vertex on top of the

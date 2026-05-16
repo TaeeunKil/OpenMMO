@@ -10,7 +10,11 @@ use std::collections::BinaryHeap;
 
 use super::super::global_map::GlobalMap;
 use super::super::grid::{MinF32, fold_x_delta_f32};
-use super::super::rivers::Polyline;
+use super::super::rivers::RiverMap;
+use super::super::tile_bake::river_geom::{
+    flow_log_inv, flow_to_width, mouth_fan_factor, BRIDGE_MAX_BAKED_WIDTH_M,
+    RIVER_MOUTH_FAN_ARC_CELLS,
+};
 use super::axis::{SnapAxis, pick_river_axis, step_axis};
 
 /// Linear penalty per unit grade applied to every road step, scaled by the
@@ -74,13 +78,13 @@ const RIVER_BUFFER_PENALTY: f32 = 1.5;
 /// exists).
 const EXISTING_ROAD_FACTOR: f32 = 0.5;
 
-/// Per-cell river overlay used by A*. `mask[i] != 0` marks cells the road
-/// should treat as on-river; `tangent[i]` is the unit downstream direction
-/// at that cell, used to score how parallel each candidate step is to the
-/// flow; `near_river[i] != 0` flags cells inside the Chebyshev-1 ring of
-/// any river cell (i.e. any of the eight neighbours), driving the
-/// breathing-room buffer penalty. Built once per `compute_roads` call from
-/// the already-extracted river polylines.
+/// Per-cell river overlay used by A*. `mask[i]` is 0 for non-river,
+/// [`MASK_RIVER`] for normal river cells, and [`MASK_WIDE`] for cells
+/// whose predicted baked width exceeds [`BRIDGE_MAX_BAKED_WIDTH_M`] —
+/// road A* refuses to step into wide cells (except as start/goal) so
+/// roads detour upstream to a narrower crossing. `tangent` /
+/// `axis` / `near_river` describe geometry around the river cells for
+/// the perpendicular-cross gate and breathing-room buffer.
 pub(super) struct RiverField {
     mask: Vec<u8>,
     tangent: Vec<(f32, f32)>,
@@ -91,39 +95,72 @@ pub(super) struct RiverField {
     near_river: Vec<u8>,
 }
 
+const MASK_RIVER: u8 = 1;
+const MASK_WIDE: u8 = 2;
+
 impl RiverField {
-    pub(super) fn from_polylines(rivers: &[Polyline], res: usize) -> Self {
+    pub(super) fn from_river_map(river_map: &RiverMap, map: &GlobalMap) -> Self {
+        let res = map.config.global_res as usize;
         let total = res * res;
         let mut mask = vec![0u8; total];
         let mut tangent = vec![(0.0f32, 0.0f32); total];
         let mut axis = vec![SnapAxis::Horizontal; total];
         let res_f = res as f32;
-        for poly in rivers {
+        let inv_log_max = flow_log_inv(river_map.max_flow());
+        let inv_arc = 1.0 / RIVER_MOUTH_FAN_ARC_CELLS.max(1e-3);
+
+        for poly in &river_map.rivers {
             let pts = &poly.points;
-            if pts.len() < 2 {
+            let n = pts.len();
+            if n < 2 {
                 continue;
             }
-            for i in 0..pts.len() {
+            // Two-pass: arc lengths first (mouth-fan needs `total - lens[i]`),
+            // then per-vertex outputs. X-wrap fold so seam-crossing rivers
+            // measure their on-grid distance rather than the wrap.
+            let mut lens: Vec<f32> = Vec::with_capacity(n);
+            lens.push(0.0);
+            let mut cumulative = 0.0f32;
+            for i in 1..n {
+                let (px, py) = pts[i - 1];
+                let (qx, qy) = pts[i];
+                let dx = fold_x_delta_f32(qx as f32 - px as f32, res_f);
+                let dy = qy as f32 - py as f32;
+                cumulative += (dx * dx + dy * dy).sqrt();
+                lens.push(cumulative);
+            }
+            let total_arc = cumulative;
+            let (end_x, end_y) = pts[n - 1];
+            let mouth_in_sea =
+                map.land_mask[(end_y as usize) * res + (end_x as usize)] == 0;
+
+            for i in 0..n {
                 let (x, y) = pts[i];
                 let idx = (y as usize) * res + (x as usize);
-                mask[idx] = 1;
-                // Central difference where available, one-sided at the
-                // ends. X-wrap: when consecutive samples land on opposite
-                // sides of the seam (≥ res/2 apart) the raw delta has the
-                // wrong sign — fold it to the shorter side.
                 let prev = if i == 0 { pts[i] } else { pts[i - 1] };
-                let next = if i + 1 >= pts.len() {
-                    pts[i]
-                } else {
-                    pts[i + 1]
-                };
+                let next = if i + 1 >= n { pts[i] } else { pts[i + 1] };
                 let dx = fold_x_delta_f32(next.0 as f32 - prev.0 as f32, res_f);
                 let dy = next.1 as f32 - prev.1 as f32;
                 let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-                let tx = dx / len;
-                let ty = dy / len;
-                tangent[idx] = (tx, ty);
-                axis[idx] = pick_river_axis(tx, ty);
+                tangent[idx] = (dx / len, dy / len);
+                axis[idx] = pick_river_axis(dx / len, dy / len);
+
+                let base_w = flow_to_width(poly.flow[i], inv_log_max);
+                let mouth_factor = if mouth_in_sea {
+                    mouth_fan_factor((total_arc - lens[i]) * inv_arc)
+                } else {
+                    1.0
+                };
+                // Multiple polylines can touch the same cell; widen-wins
+                // so the wide flag survives a narrower polyline overwrite.
+                let new_mark = if base_w * mouth_factor > BRIDGE_MAX_BAKED_WIDTH_M {
+                    MASK_WIDE
+                } else {
+                    MASK_RIVER
+                };
+                if new_mark > mask[idx] {
+                    mask[idx] = new_mark;
+                }
             }
         }
         let near_river = chebyshev_dilate(&mask, res);
@@ -286,6 +323,14 @@ pub(super) fn a_star(
                 }
                 let ni = ny as usize * res + nx;
                 if mask[ni] == 0 || scratch.closed[ni] {
+                    continue;
+                }
+                // Wide cells are impassable except as start/goal so a
+                // settlement on a wide cell can still terminate a road.
+                if ni != start
+                    && ni != goal
+                    && river_field.mask[ni] == MASK_WIDE
+                {
                     continue;
                 }
                 let is_diag = dx.abs() + dy.abs() == 2;
