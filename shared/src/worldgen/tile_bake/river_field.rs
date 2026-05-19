@@ -236,6 +236,8 @@ mod tests {
             flow_norm_b: 0.5,
             width_a: 4.0,
             width_b: 4.0,
+            bed_floor_a: 0.0,
+            bed_floor_b: 0.0,
         }]
     }
 
@@ -317,6 +319,8 @@ mod tests {
             flow_norm_b: 0.5,
             width_a: 4.0,
             width_b: 4.0,
+            bed_floor_a: 0.0,
+            bed_floor_b: 0.0,
         }];
         let bin = bake_river_field(&map, &ctx, &heights, -32.0, -32.0, &segs)
             .expect("segment present, file is written");
@@ -380,6 +384,8 @@ mod tests {
                 flow_norm_b: 0.8,
                 width_a: 50.0,
                 width_b: 50.0,
+                bed_floor_a: 0.0,
+                bed_floor_b: 0.0,
             },
             RiverSegment {
                 ax: 33.0,
@@ -390,6 +396,8 @@ mod tests {
                 flow_norm_b: 0.8,
                 width_a: 50.0,
                 width_b: 50.0,
+                bed_floor_a: 0.0,
+                bed_floor_b: 0.0,
             },
         ];
         let bin_a = bake_river_field(&map, &ctx, &heights, -32.0, -32.0, &segs)

@@ -168,7 +168,7 @@ pub(super) fn bake_splatmap(
             // banks at a given cross-section get the same scale — keeps the
             // band symmetric per station while letting it widen and
             // narrow as you move along the river.
-            let (river_d_m, river_width_m, river_band_scale) =
+            let (river_d_m, river_width_m, river_band_scale, river_bed_floor_m) =
                 nearest_river_segment(wx, wz, river_segs)
                     .map(|(d, idx, t)| {
                         let s = &river_segs[idx];
@@ -185,9 +185,14 @@ pub(super) fn bake_splatmap(
                             DETAIL_GAIN,
                         );
                         let scale = 1.0 + n * RIVER_BAND_NOISE_AMP;
-                        (d, lerp(s.width_a, s.width_b, t), scale)
+                        (
+                            d,
+                            lerp(s.width_a, s.width_b, t),
+                            scale,
+                            lerp(s.bed_floor_a, s.bed_floor_b, t),
+                        )
                     })
-                    .unwrap_or((f32::INFINITY, 0.0, 1.0));
+                    .unwrap_or((f32::INFINITY, 0.0, 1.0, 0.0));
 
             // `classify_splat` only consumes the patch sample in its plain
             // branch; passing a closure skips the warp + Voronoi query on
@@ -198,6 +203,7 @@ pub(super) fn bake_splatmap(
                     river_d_m,
                     river_width_m,
                     river_band_scale,
+                    river_bed_floor_m,
                     road_d_m: min_distance_to_segments(wx, wz, road_segs),
                     h_center,
                     slope,
@@ -239,6 +245,9 @@ struct SplatInputs {
     /// (tests, no-river cells). Typical bake range ~[0.55, 1.45] (see
     /// `RIVER_BAND_NOISE_AMP`).
     river_band_scale: f32,
+    /// Carved bed-floor target at the nearest river projection. Negative
+    /// values identify sub-sea mouth distributary segments.
+    river_bed_floor_m: f32,
     road_d_m: f32,
     h_center: f32,
     slope: f32,
@@ -255,6 +264,7 @@ fn classify_splat(inputs: SplatInputs, patch: impl FnOnce() -> PatchSample) -> (
         river_d_m,
         river_width_m,
         river_band_scale,
+        river_bed_floor_m,
         road_d_m,
         h_center,
         slope,
@@ -292,22 +302,21 @@ fn classify_splat(inputs: SplatInputs, patch: impl FnOnce() -> PatchSample) -> (
         // `water_half_width_m` instead keeps the wet zone clean while still
         // letting some grass / sparse trees grow on the dry sand bank.
         let sand_t = (river_d_m / river_sand_half_width_m).clamp(0.0, 1.0);
-        // Inside the mouth fan, the pebble band collapses to zero so the
-        // entire visible delta wedge reads as sand (continuous with the
-        // shallow-sea SAND beyond the coast). Keyed on the post-fan
-        // segment width: `apply_mouth_fan_widths` only inflates widths
-        // past the apex, so `river_width_m > RIVER_FAN_SAND_BASE_WIDTH_M`
-        // is the natural fan-entry signal. Fades over `_FADE_M` of width
-        // so the seam straddles a couple of cells instead of popping.
+        // On widened mouth segments or sub-sea distributary branches, the
+        // pebble band collapses to zero so the riverbed reads as sand
+        // (continuous with the shallow-sea SAND beyond the coast). Width
+        // still handles legacy wide fans; negative bed-floor handles the
+        // narrow branch mouths. Both paths fade over a small range so the
+        // seam straddles a couple of cells instead of popping.
         // Both palettes share the GROUND secondary so the bank fade stays
         // smooth across the swap.
-        let pebble_wedge_t = 1.0
-            - smoothstep(
-                RIVER_FAN_SAND_BASE_WIDTH_M,
-                RIVER_FAN_SAND_BASE_WIDTH_M + RIVER_FAN_SAND_FADE_M,
-                river_width_m,
-            );
-        let pebble_half_width_m = river_sand_half_width_m * pebble_wedge_t;
+        let mouth_sand_t = smoothstep(
+            RIVER_FAN_SAND_BASE_WIDTH_M,
+            RIVER_FAN_SAND_BASE_WIDTH_M + RIVER_FAN_SAND_FADE_M,
+            river_width_m,
+        )
+        .max(smoothstep(0.01, 0.25, -river_bed_floor_m));
+        let pebble_half_width_m = river_sand_half_width_m * (1.0 - mouth_sand_t);
         let is_pebble = river_d_m < pebble_half_width_m;
         let primary = if is_pebble { PAL_RIVER_BED } else { PAL_SAND };
         // Sand-primary cells share the coast-sand branch's quadratic coast
@@ -473,6 +482,7 @@ mod tests {
             river_d_m: f32::INFINITY,
             river_width_m: 0.0,
             river_band_scale: 1.0,
+            river_bed_floor_m: 0.0,
             road_d_m: f32::INFINITY,
             h_center: 10.0,
             slope: 0.0,
@@ -830,6 +840,7 @@ mod tests {
             points: vec![[0.5, -10.0], [0.5, 10.0]],
             flow_norm: vec![0.5, 0.5],
             width: vec![4.0, 4.0],
+            bed_floor: vec![0.0, 0.0],
         }];
         let margin = super::super::river_margin_m();
         let near_tile_0 = river_segments_near_tile(&polys, -32.0, -16.0, 32.0, 16.0, margin);
@@ -841,6 +852,7 @@ mod tests {
             ],
             flow_norm: vec![0.5, 0.5],
             width: vec![4.0, 4.0],
+            bed_floor: vec![0.0, 0.0],
         }];
         let near_tile_1 = river_segments_near_tile(&polys2, 32.0, -16.0, 96.0, 16.0, margin);
         assert_eq!(

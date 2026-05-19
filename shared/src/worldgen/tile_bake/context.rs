@@ -2,6 +2,9 @@
 //! once and reusing across all ~260k tiles is the difference between a
 //! minute-long bake and something unusable.
 
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+
 use super::super::coasts::CoastPolyline;
 use super::super::config::WorldGenConfig;
 use super::super::global_map::GlobalMap;
@@ -15,12 +18,14 @@ use super::super::vector_features::{
     river_chaikin_smooth, river_polyline_to_world, RiverWorldPolyline, WorldPolyline,
 };
 use super::constants::{
-    COAST_CHAIKIN_ITERATIONS, RIVER_CHAIKIN_ITERATIONS, RIVER_MAX_WIDTH_M, RIVER_MIN_WIDTH_M,
-    RIVER_MOUTH_FAN_ARC_CELLS, RIVER_MOUTH_FAN_BANK_WOBBLE_M,
-    RIVER_MOUTH_FAN_BANK_WOBBLE_WAVELENGTH_M, ROAD_CHAIKIN_ITERATIONS,
+    COAST_CHAIKIN_ITERATIONS, RIVER_CARVE_MIN_BED_Y_M, RIVER_CHAIKIN_ITERATIONS, RIVER_MAX_WIDTH_M,
+    RIVER_MIN_WIDTH_M, RIVER_MOUTH_BRANCH_BED_Y_M, RIVER_MOUTH_BRANCH_COUNT_MAX,
+    RIVER_MOUTH_BRANCH_COUNT_MIN, RIVER_MOUTH_BRANCH_END_JITTER_M,
+    RIVER_MOUTH_BRANCH_END_WIDTH_MAX_M, RIVER_MOUTH_BRANCH_END_WIDTH_MIN_M,
+    RIVER_MOUTH_BRANCH_END_WIDTH_SCALE, RIVER_MOUTH_BRANCH_MEANDER_M, RIVER_MOUTH_BRANCH_SPREAD_M,
+    RIVER_MOUTH_FAN_ARC_CELLS, ROAD_CHAIKIN_ITERATIONS,
 };
 use super::heightmap::cell_elevation_m;
-use super::river_geom::mouth_fan_factor;
 
 pub struct BakeContext {
     /// Deterministic detail-noise source seeded off the master seed.
@@ -74,12 +79,11 @@ impl BakeContext {
 
         let mut rivers_world =
             smooth_river_polylines(river_map, &map.config, RIVER_CHAIKIN_ITERATIONS);
-        // Widen polyline widths near the coast so the estuary fans out into
-        // a small delta. Heightmap carve, splatmap classification, and the
-        // client ribbon all consume these per-vertex widths, so applying
-        // the scale here keeps the three consistent — if this lived only
-        // on the client, the water plane would overhang the carved banks.
-        apply_mouth_fan_widths(&mut rivers_world, map, &dist_to_land);
+        // Split sea-bound mouths into several narrow distributaries. The
+        // heightmap carve, splatmap, and river field all consume
+        // `rivers_world`, so adding branches here keeps every baked layer
+        // aligned.
+        apply_mouth_distributaries(&mut rivers_world, map, &dist_to_land);
         let roads_world = smooth_polylines(
             road_net.roads.iter().map(|r| r.points.as_slice()),
             &map.config,
@@ -134,85 +138,202 @@ fn sample_base_elevation(map: &GlobalMap, dist_to_land: &[u16], wx: f32, wz: f32
     e0 * (1.0 - tz) + e1 * tz
 }
 
-/// Straighten the last `RIVER_MOUTH_FAN_ARC_CELLS` cells of arc of each
-/// sea-bound polyline into a clean apex→mouth line, then scale per-vertex
-/// `width` along the same window via a 1/x reciprocal curve (peak at the
-/// mouth, 1× at the apex). Without straightening, the underlying 8-
-/// connected cell trace leaves small kinks in the fan zone that the bake
-/// carve faithfully reproduces — visible as dents in the wedge bank.
-/// Both adjustments share the same arc-length walk so they stay aligned.
-fn apply_mouth_fan_widths(
-    rivers_world: &mut [RiverWorldPolyline],
+/// Replace the sea-bound tail of each river with 5-7 narrow distributary
+/// branches. The split starts at the same arc distance where the old mouth
+/// fan began widening; the original polyline is truncated there and the
+/// generated branches carry the flow into the sea with gentle S-curves.
+fn apply_mouth_distributaries(
+    rivers_world: &mut Vec<RiverWorldPolyline>,
     map: &GlobalMap,
     dist_to_land: &[u16],
 ) {
-    let arc_m = RIVER_MOUTH_FAN_ARC_CELLS * map.config.meters_per_cell();
-    let bank_noise = PerlinNoise3D::new(map.config.seed ^ 0xB44E_5099_F1A8_C3D7);
-    let wobble_freq = 1.0 / RIVER_MOUTH_FAN_BANK_WOBBLE_WAVELENGTH_M.max(1e-3);
-
-    for poly in rivers_world.iter_mut() {
-        let n = poly.points.len();
-        if n < 2 {
-            continue;
-        }
-        let end = poly.points[n - 1];
-        if sample_base_elevation(map, dist_to_land, end[0], end[1]) >= 0.0 {
-            continue;
-        }
-
-        // Cumulative arc length on the original (curvy) polyline. Captured
-        // before straightening so `dist_from_end` matches what the river
-        // map intended.
-        let mut cumulative = 0.0f32;
-        let mut lens: Vec<f32> = Vec::with_capacity(n);
-        lens.push(0.0);
-        for i in 1..n {
-            let dx = poly.points[i][0] - poly.points[i - 1][0];
-            let dy = poly.points[i][1] - poly.points[i - 1][1];
-            cumulative += (dx * dx + dy * dy).sqrt();
-            lens.push(cumulative);
-        }
-        let total = cumulative;
-
-        // Locate the apex: the deepest interior vertex still outside the
-        // fan window. Everything between it and the end gets snapped to the
-        // apex→end chord (parameterized by arc fraction so vertex ordering
-        // is preserved), then perturbed perpendicular to the axis by low-
-        // frequency Perlin noise so the bank doesn't read as CG-perfect.
-        let mut apex_idx: Option<usize> = None;
-        for i in (0..n).rev() {
-            if total - lens[i] >= arc_m {
-                apex_idx = Some(i);
-                break;
-            }
-        }
-        if let Some(apex_idx) = apex_idx {
-            if apex_idx + 1 < n - 1 {
-                let apex = poly.points[apex_idx];
-                let dx_axis = end[0] - apex[0];
-                let dy_axis = end[1] - apex[1];
-                let axis_len = (dx_axis * dx_axis + dy_axis * dy_axis).sqrt().max(1e-3);
-                let perp_x = -dy_axis / axis_len;
-                let perp_y = dx_axis / axis_len;
-                let apex_arc = lens[apex_idx];
-                let zone_arc = (total - apex_arc).max(1e-3);
-                for i in (apex_idx + 1)..(n - 1) {
-                    let frac = (lens[i] - apex_arc) / zone_arc;
-                    let straight_x = apex[0] + dx_axis * frac;
-                    let straight_y = apex[1] + dy_axis * frac;
-                    let noise =
-                        bank_noise.sample(straight_x * wobble_freq, straight_y * wobble_freq, 0.0);
-                    let wobble = noise * RIVER_MOUTH_FAN_BANK_WOBBLE_M * frac;
-                    poly.points[i][0] = straight_x + perp_x * wobble;
-                    poly.points[i][1] = straight_y + perp_y * wobble;
-                }
-            }
-        }
-
-        for i in 0..n {
-            poly.width[i] *= mouth_fan_factor((total - lens[i]) / arc_m.max(1e-3));
-        }
+    let original_len = rivers_world.len();
+    let mut branches = Vec::new();
+    for poly_idx in 0..original_len {
+        branches.extend(split_mouth_polyline(
+            poly_idx,
+            &mut rivers_world[poly_idx],
+            map,
+            dist_to_land,
+        ));
     }
+    rivers_world.extend(branches);
+}
+
+fn split_mouth_polyline(
+    poly_idx: usize,
+    poly: &mut RiverWorldPolyline,
+    map: &GlobalMap,
+    dist_to_land: &[u16],
+) -> Vec<RiverWorldPolyline> {
+    let n = poly.points.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let end = poly.points[n - 1];
+    if sample_base_elevation(map, dist_to_land, end[0], end[1]) >= 0.0 {
+        return Vec::new();
+    }
+
+    let arc_m = RIVER_MOUTH_FAN_ARC_CELLS * map.config.meters_per_cell();
+    let (lens, total) = polyline_arc_lengths(&poly.points);
+    let Some(apex_idx) = (0..n).rev().find(|&i| total - lens[i] >= arc_m) else {
+        return Vec::new();
+    };
+    if apex_idx == 0 || apex_idx >= n - 1 {
+        return Vec::new();
+    }
+
+    let apex = poly.points[apex_idx];
+    let axis_x = end[0] - apex[0];
+    let axis_z = end[1] - apex[1];
+    let axis_len = (axis_x * axis_x + axis_z * axis_z).sqrt();
+    if axis_len < 1e-3 {
+        return Vec::new();
+    }
+    let tangent = [axis_x / axis_len, axis_z / axis_len];
+    let normal = [-tangent[1], tangent[0]];
+    let apex_flow = poly.flow_norm[apex_idx];
+    let end_flow = poly.flow_norm[n - 1];
+    let apex_width = poly.width[apex_idx].min(RIVER_MAX_WIDTH_M);
+    let base_width = poly.width[n - 1].min(RIVER_MAX_WIDTH_M);
+
+    let mut rng = SmallRng::seed_from_u64(
+        map.config.seed
+            ^ 0xD157_1B00_5EED_5EED
+            ^ (poly_idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+    );
+    let count = rng.gen_range(RIVER_MOUTH_BRANCH_COUNT_MIN..=RIVER_MOUTH_BRANCH_COUNT_MAX);
+    let spread_half = RIVER_MOUTH_BRANCH_SPREAD_M.min(axis_len * 0.75);
+    let spacing = if count > 1 {
+        spread_half * 2.0 / (count - 1) as f32
+    } else {
+        0.0
+    };
+
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let slot_t = if count <= 1 {
+            0.5
+        } else {
+            i as f32 / (count - 1) as f32
+        };
+        let jitter_cap = RIVER_MOUTH_BRANCH_END_JITTER_M.min(spacing * 0.25);
+        let edge_damp = if i == 0 || i + 1 == count { 0.45 } else { 1.0 };
+        let jitter = rng.gen_range(-jitter_cap..=jitter_cap) * edge_damp;
+        let lateral = (slot_t * 2.0 - 1.0) * spread_half + jitter;
+        let mut end_pt = [end[0] + normal[0] * lateral, end[1] + normal[1] * lateral];
+        end_pt = push_point_to_sea(end_pt, tangent, map, dist_to_land);
+
+        let width_jitter = rng.gen_range(0.9..=1.12);
+        let end_width = (base_width * RIVER_MOUTH_BRANCH_END_WIDTH_SCALE * width_jitter).clamp(
+            RIVER_MOUTH_BRANCH_END_WIDTH_MIN_M,
+            RIVER_MOUTH_BRANCH_END_WIDTH_MAX_M,
+        );
+        let amp_cap = (spacing * 0.32).max(1.0).min(axis_len * 0.16);
+        let amp = rng.gen_range(0.45..=1.0)
+            * RIVER_MOUTH_BRANCH_MEANDER_M.min(amp_cap)
+            * if rng.gen_bool(0.5) { 1.0 } else { -1.0 };
+
+        out.push(build_distributary_branch(
+            apex, end_pt, apex_flow, end_flow, apex_width, end_width, amp,
+        ));
+    }
+
+    poly.points.truncate(apex_idx + 1);
+    poly.flow_norm.truncate(apex_idx + 1);
+    poly.width.truncate(apex_idx + 1);
+
+    out
+}
+
+fn polyline_arc_lengths(points: &[[f32; 2]]) -> (Vec<f32>, f32) {
+    let mut lens = Vec::with_capacity(points.len());
+    lens.push(0.0);
+    let mut cumulative = 0.0f32;
+    for i in 1..points.len() {
+        let dx = points[i][0] - points[i - 1][0];
+        let dz = points[i][1] - points[i - 1][1];
+        cumulative += (dx * dx + dz * dz).sqrt();
+        lens.push(cumulative);
+    }
+    (lens, cumulative)
+}
+
+fn push_point_to_sea(
+    mut p: [f32; 2],
+    tangent: [f32; 2],
+    map: &GlobalMap,
+    dist_to_land: &[u16],
+) -> [f32; 2] {
+    const STEP_M: f32 = 8.0;
+    const MAX_STEPS: usize = 24;
+    const SEA_EXTRA_STEPS: usize = 3;
+    for _ in 0..MAX_STEPS {
+        p = clamp_world_point(p, map);
+        if sample_base_elevation(map, dist_to_land, p[0], p[1]) < 0.0 {
+            for _ in 0..SEA_EXTRA_STEPS {
+                p[0] += tangent[0] * STEP_M;
+                p[1] += tangent[1] * STEP_M;
+                p = clamp_world_point(p, map);
+            }
+            return p;
+        }
+        p[0] += tangent[0] * STEP_M;
+        p[1] += tangent[1] * STEP_M;
+    }
+    clamp_world_point(p, map)
+}
+
+fn clamp_world_point(mut p: [f32; 2], map: &GlobalMap) -> [f32; 2] {
+    let half = map.config.world_size_m as f32 * 0.5;
+    p[0] = p[0].clamp(-half, half);
+    p[1] = p[1].clamp(-half, half);
+    p
+}
+
+fn build_distributary_branch(
+    apex: [f32; 2],
+    end: [f32; 2],
+    apex_flow: f32,
+    end_flow: f32,
+    apex_width: f32,
+    end_width: f32,
+    meander_amp: f32,
+) -> RiverWorldPolyline {
+    let axis_x = end[0] - apex[0];
+    let axis_z = end[1] - apex[1];
+    let axis_len = (axis_x * axis_x + axis_z * axis_z).sqrt().max(1e-3);
+    let normal = [-axis_z / axis_len, axis_x / axis_len];
+
+    let mut points = Vec::with_capacity(5);
+    let mut flow_norm = Vec::with_capacity(5);
+    let mut widths = Vec::with_capacity(5);
+    let mut bed_floor = Vec::with_capacity(5);
+    for t in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+        let s = (std::f32::consts::TAU * t).sin() * meander_amp;
+        points.push([
+            apex[0] + axis_x * t + normal[0] * s,
+            apex[1] + axis_z * t + normal[1] * s,
+        ]);
+        flow_norm.push(apex_flow + (end_flow - apex_flow) * t);
+        let taper = t * t * (3.0 - 2.0 * t);
+        widths.push(apex_width + (end_width - apex_width) * taper);
+        bed_floor.push(
+            RIVER_CARVE_MIN_BED_Y_M
+                + (RIVER_MOUTH_BRANCH_BED_Y_M - RIVER_CARVE_MIN_BED_Y_M) * taper,
+        );
+    }
+
+    river_chaikin_smooth(
+        &RiverWorldPolyline {
+            points,
+            flow_norm,
+            width: widths,
+            bed_floor,
+        },
+        RIVER_CHAIKIN_ITERATIONS,
+    )
 }
 
 /// Convert an iterator of cell-coord polylines into world-space polylines,

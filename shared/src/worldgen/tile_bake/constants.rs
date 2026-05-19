@@ -71,7 +71,7 @@ pub(super) const HILLS_COASTAL_FADE_M: f32 = 3.0;
 // --- River carve / splat ------------------------------------------------
 // Width, taper, and carve depth all grow linearly in `flow_norm ∈ [0, 1]`.
 // See RIVER_SYSTEM.md §2.4 / §2.5.
-pub const RIVER_MIN_WIDTH_M: f32 = 1.5;
+pub const RIVER_MIN_WIDTH_M: f32 = 1.0;
 pub const RIVER_MAX_WIDTH_M: f32 = 10.0;
 pub(super) const RIVER_CARVE_TAPER_MIN_M: f32 = 3.0;
 pub(super) const RIVER_CARVE_TAPER_EXTRA_M: f32 = 7.0;
@@ -94,45 +94,40 @@ pub(super) const RIVER_DEPTH_OFFSET_M: f32 = 0.5;
 /// River-bed splat switches from `PAL_RIVER_BED` (ganges pebbles — wet
 /// inland bed look) to `PAL_SAND` (sandy_gravel_02 — matches shallow sea)
 /// as the river enters the mouth fan. Keyed on the projected segment
-/// width: the fan-widening starts at the apex, so `width > RIVER_MAX_WIDTH_M`
-/// is the natural fan-entry signal. Smoothstep from `BASE_M` (still
+/// width: if a mouth segment grows past `RIVER_MAX_WIDTH_M`, that remains
+/// the natural fan-entry signal. Smoothstep from `BASE_M` (still
 /// pebble) to `BASE_M + FADE_M` (fully sand) keeps the swap a couple of
 /// cells wide so the seam doesn't pop.
 pub(super) const RIVER_FAN_SAND_BASE_WIDTH_M: f32 = RIVER_MAX_WIDTH_M;
 pub(super) const RIVER_FAN_SAND_FADE_M: f32 = 3.0;
-/// Width-fan window (cells of arc-length along the polyline, measured back
-/// from the river mouth). Vertices at or past `ARC_CELLS` from the mouth
-/// keep their natural width; vertices closer to the mouth are widened up
-/// to `1 + EXTRA` at the mouth itself. Applied globally to `rivers_world`
-/// in `BakeContext::new` so heightmap carving, splatmap classification,
-/// and the client ribbon all see the same fan-scaled widths — otherwise
-/// the water surface plane widens past the carved banks. Past the coast,
-/// the client sea extension tapers the wedge back to a point (see
-/// `SEA_EXTEND_*` in `river-geometry.ts`), producing the symmetric
-/// spindle-shaped delta centered on the coastline.
-///
-/// `ARC_CELLS` matches the old `DISTRIBUTARY_APEX_OFFSET_CELLS` so the
-/// wedge opens at the same on-polyline location where distributary
-/// branches used to fork — a localized 부채꼴 delta rather than a generic
-/// "river is wider here" effect.
-///
-/// `SHARPNESS` controls how concentrated the widening is around the
-/// coastline. The shape factor is `s(t) = ((1 + k)/(k·t + 1) - 1) / k`
-/// with `k = SHARPNESS` and `t = arc_distance_from_mouth / window`:
-/// `s(1)=0` at the wedge start, `s(0)=1` at the mouth. Higher `k` ⇒
-/// flatter upstream + sharper flare at the coast.
+/// Distributary window (cells of arc-length measured back from the river
+/// mouth). The original river is kept up to this apex, then the baker
+/// replaces the sea-bound tail with several narrow S-curved branches.
 pub const RIVER_MOUTH_FAN_ARC_CELLS: f32 = 8.5;
+/// Legacy fan scale used for conservative road avoidance and tile river
+/// margins around delta mouths. The baked mouth no longer becomes one wide
+/// ribbon; it uses this same scale only to size the distributary spread.
 pub(super) const RIVER_MOUTH_FAN_EXTRA: f32 = 10.0;
 pub(super) const RIVER_MOUTH_FAN_SHARPNESS: f32 = 1.5;
-/// Perpendicular bank wobble (m) added per fan-zone vertex on top of the
-/// straightened apex→mouth axis. Scales with the vertex's fan progress
-/// (0 at apex, 1 at mouth) so wider sections wobble more. Without this
-/// the straightening produces a too-clean 1/x curve that reads as CG.
-pub(super) const RIVER_MOUTH_FAN_BANK_WOBBLE_M: f32 = 3.0;
-/// Wavelength (m) of the Perlin noise driving the bank wobble. ~20 m
-/// gives a few visible cycles across a 68 m fan zone — organic without
-/// looking ridge-and-valley.
-pub(super) const RIVER_MOUTH_FAN_BANK_WOBBLE_WAVELENGTH_M: f32 = 20.0;
+pub(super) const RIVER_MOUTH_BRANCH_COUNT_MIN: u32 = 2;
+pub(super) const RIVER_MOUTH_BRANCH_COUNT_MAX: u32 = 6;
+/// Half-width (m) of the fan-shaped endpoint spread for distributaries.
+pub(super) const RIVER_MOUTH_BRANCH_SPREAD_M: f32 =
+    RIVER_MAX_WIDTH_M * RIVER_MOUTH_FAN_EXTRA * 0.30;
+/// Endpoint lateral jitter (m) so branches do not form a perfect comb.
+pub(super) const RIVER_MOUTH_BRANCH_END_JITTER_M: f32 = 4.0;
+/// Maximum signed S-curve offset (m) applied to each branch centerline.
+pub(super) const RIVER_MOUTH_BRANCH_MEANDER_M: f32 = 8.0;
+/// End width as a fraction of the original mouth width, capped below. The
+/// branch starts at the incoming river width and tapers to this narrower
+/// sea contact width.
+pub(super) const RIVER_MOUTH_BRANCH_END_WIDTH_SCALE: f32 = 0.12;
+pub(super) const RIVER_MOUTH_BRANCH_END_WIDTH_MIN_M: f32 = 0.45;
+pub(super) const RIVER_MOUTH_BRANCH_END_WIDTH_MAX_M: f32 = 2.0;
+/// Bed-floor target for tapering mouth distributary branches. These branches
+/// narrow as they approach the sea, so the carve needs a small sub-sea floor
+/// to keep the channel visibly connected to ocean water.
+pub(super) const RIVER_MOUTH_BRANCH_BED_Y_M: f32 = -0.5;
 /// Drop of the river-bed floor below `RIVER_CARVE_MIN_BED_Y_M` in the fan
 /// zone, proportional to width excess. At the fan peak the bed sits at
 /// `-RIVER_MOUTH_FAN_BED_DROP_M` so the channel reads as shallow sea.

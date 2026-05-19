@@ -22,9 +22,10 @@ pub struct WorldPolyline {
 }
 
 /// River polyline in world-space meters with per-vertex scalars. Same
-/// `points` semantics as `WorldPolyline`; `flow_norm` and `width` run
-/// parallel (same length). Used by tile bake to drive flow-aware carve +
-/// sand band and to emit the per-tile `rivers/*.bin` geometry.
+/// `points` semantics as `WorldPolyline`; `flow_norm`, `width`, and
+/// `bed_floor` run parallel (same length). Used by tile bake to drive
+/// flow-aware carve + sand band and to emit the per-tile `rivers/*.bin`
+/// geometry.
 #[derive(Debug, Clone, Default)]
 pub struct RiverWorldPolyline {
     pub points: Vec<[f32; 2]>,
@@ -33,6 +34,9 @@ pub struct RiverWorldPolyline {
     pub flow_norm: Vec<f32>,
     /// River width in meters at this vertex.
     pub width: Vec<f32>,
+    /// Minimum carved bed elevation target at this vertex. Natural rivers
+    /// stay at sea level; mouth distributaries can ease below it.
+    pub bed_floor: Vec<f32>,
 }
 
 /// A single river segment expressed as two endpoints plus per-vertex
@@ -49,6 +53,8 @@ pub struct RiverSegment {
     pub flow_norm_b: f32,
     pub width_a: f32,
     pub width_b: f32,
+    pub bed_floor_a: f32,
+    pub bed_floor_b: f32,
 }
 
 /// Convert a polyline to world-space meters by mapping each input point
@@ -216,9 +222,11 @@ pub fn river_polyline_to_world(
                 // scalar values.
                 let last_fn = *current.flow_norm.last().unwrap();
                 let last_w = *current.width.last().unwrap();
+                let last_bed = *current.bed_floor.last().unwrap();
                 current.points.push([edge_last, last[1]]);
                 current.flow_norm.push(last_fn);
                 current.width.push(last_w);
+                current.bed_floor.push(last_bed);
                 if current.points.len() >= 2 {
                     out.push(std::mem::take(&mut current));
                 } else {
@@ -229,11 +237,13 @@ pub fn river_polyline_to_world(
                 current.points.push([edge_p, p[1]]);
                 current.flow_norm.push(fn_v);
                 current.width.push(w_v);
+                current.bed_floor.push(0.0);
             }
         }
         current.points.push(p);
         current.flow_norm.push(fn_v);
         current.width.push(w_v);
+        current.bed_floor.push(0.0);
     }
 
     if current.points.len() >= 2 {
@@ -249,9 +259,11 @@ pub fn river_polyline_to_world(
 pub fn river_chaikin_smooth(poly: &RiverWorldPolyline, iterations: u32) -> RiverWorldPolyline {
     assert_eq!(poly.points.len(), poly.flow_norm.len());
     assert_eq!(poly.points.len(), poly.width.len());
+    assert_eq!(poly.points.len(), poly.bed_floor.len());
     let mut pts = poly.points.clone();
     let mut fns = poly.flow_norm.clone();
     let mut ws = poly.width.clone();
+    let mut beds = poly.bed_floor.clone();
     for _ in 0..iterations {
         if pts.len() < 3 {
             break;
@@ -259,9 +271,11 @@ pub fn river_chaikin_smooth(poly: &RiverWorldPolyline, iterations: u32) -> River
         let mut np: Vec<[f32; 2]> = Vec::with_capacity(pts.len() * 2);
         let mut nf: Vec<f32> = Vec::with_capacity(pts.len() * 2);
         let mut nw: Vec<f32> = Vec::with_capacity(pts.len() * 2);
+        let mut nb: Vec<f32> = Vec::with_capacity(pts.len() * 2);
         np.push(pts[0]);
         nf.push(fns[0]);
         nw.push(ws[0]);
+        nb.push(beds[0]);
         for i in 0..pts.len() - 1 {
             let a = pts[i];
             let b = pts[i + 1];
@@ -269,24 +283,31 @@ pub fn river_chaikin_smooth(poly: &RiverWorldPolyline, iterations: u32) -> River
             let fb = fns[i + 1];
             let wa = ws[i];
             let wb = ws[i + 1];
+            let ba = beds[i];
+            let bb = beds[i + 1];
             np.push([0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]]);
             np.push([0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1]]);
             nf.push(0.75 * fa + 0.25 * fb);
             nf.push(0.25 * fa + 0.75 * fb);
             nw.push(0.75 * wa + 0.25 * wb);
             nw.push(0.25 * wa + 0.75 * wb);
+            nb.push(0.75 * ba + 0.25 * bb);
+            nb.push(0.25 * ba + 0.75 * bb);
         }
         np.push(*pts.last().unwrap());
         nf.push(*fns.last().unwrap());
         nw.push(*ws.last().unwrap());
+        nb.push(*beds.last().unwrap());
         pts = np;
         fns = nf;
         ws = nw;
+        beds = nb;
     }
     RiverWorldPolyline {
         points: pts,
         flow_norm: fns,
         width: ws,
+        bed_floor: beds,
     }
 }
 
@@ -330,6 +351,8 @@ pub fn river_segments_near_tile(
                 flow_norm_b: poly.flow_norm[i + 1],
                 width_a: poly.width[i],
                 width_b: poly.width[i + 1],
+                bed_floor_a: poly.bed_floor[i],
+                bed_floor_b: poly.bed_floor[i + 1],
             });
         }
     }

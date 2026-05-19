@@ -268,7 +268,7 @@ fn carve_at_point_detailed(
     let flow_norm = lerp(seg.flow_norm_a, seg.flow_norm_b, t);
     let width = lerp(seg.width_a, seg.width_b, t);
     let (half_width, taper, depth) = segment_carve_params(flow_norm, width);
-    let bed_floor = mouth_fan_bed_floor(width);
+    let bed_floor = segment_bed_floor(seg, width, t);
     let max_carve_depth = (current_h - bed_floor).max(0.0);
     let signed_d = signed_distance_to_segment(world_x, world_z, seg, t);
     let outside_strength = bend_outside_strength(segs, idx, t);
@@ -297,16 +297,19 @@ fn carve_at_point_detailed(
     })
 }
 
-/// Bed-floor target in meters as a function of vertex width. At natural
-/// widths returns `RIVER_CARVE_MIN_BED_Y_M`; as the flare pushes width
-/// past `RIVER_MAX_WIDTH_M` the floor drops linearly to
-/// `RIVER_CARVE_MIN_BED_Y_M - RIVER_MOUTH_FAN_BED_DROP_M` at the fan peak.
+/// Bed-floor target in meters for a river segment. Natural widths return
+/// `RIVER_CARVE_MIN_BED_Y_M`; widened mouth fans can drop below sea level,
+/// and tapering distributary branches carry a per-vertex floor that eases
+/// from sea level toward a shallow sub-sea floor so the channel reaches the
+/// ocean cleanly.
 #[inline]
-fn mouth_fan_bed_floor(width_m: f32) -> f32 {
+fn segment_bed_floor(seg: &RiverSegment, width_m: f32, t: f32) -> f32 {
     let excess = (width_m - RIVER_MAX_WIDTH_M).max(0.0);
     let max_excess = RIVER_MAX_WIDTH_M * RIVER_MOUTH_FAN_EXTRA;
-    let frac = (excess / max_excess.max(1e-3)).clamp(0.0, 1.0);
-    RIVER_CARVE_MIN_BED_Y_M - RIVER_MOUTH_FAN_BED_DROP_M * frac
+    let fan_frac = (excess / max_excess.max(1e-3)).clamp(0.0, 1.0);
+    let fan_floor = RIVER_CARVE_MIN_BED_Y_M - RIVER_MOUTH_FAN_BED_DROP_M * fan_frac;
+    let branch_floor = lerp(seg.bed_floor_a, seg.bed_floor_b, t);
+    fan_floor.min(branch_floor)
 }
 
 #[inline]
@@ -703,6 +706,8 @@ mod tests {
                 flow_norm_b: 0.0,
                 width_a: 4.0,
                 width_b: 4.0,
+                bed_floor_a: 0.0,
+                bed_floor_b: 0.0,
             },
             RiverSegment {
                 ax: 0.0,
@@ -713,6 +718,8 @@ mod tests {
                 flow_norm_b: 0.0,
                 width_a: 4.0,
                 width_b: 4.0,
+                bed_floor_a: 0.0,
+                bed_floor_b: 0.0,
             },
         ];
 
