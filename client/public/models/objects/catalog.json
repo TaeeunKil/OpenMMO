@@ -17,6 +17,8 @@
     "kind": "bridge",
     "gridAlign": true,
     "minLocalY": 0,
+    "flattenFootLengthZ": 6,
+    "flattenFootWidthX": 5,
     "bridge": {
       "deckMinX": -1.77,
       "deckMaxX": 1.77,
@@ -62,6 +64,8 @@
     "gridAlign": true,
     "minLocalY": -0.85,
     "flattenBuryDepth": 0.9,
+    "flattenFootLengthZ": 7,
+    "flattenFootWidthX": 6,
     "bridge": {
       "deckMinX": -2.32,
       "deckMaxX": 2.32,

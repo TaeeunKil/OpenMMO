@@ -9,27 +9,29 @@ use super::super::global_map::GlobalMap;
 use super::super::grid::fold_x_delta_f32;
 use super::super::rivers::RiverMap;
 use super::constants::{
-    RIVER_MAX_WIDTH_M, RIVER_MIN_WIDTH_M, RIVER_MOUTH_FAN_EXTRA, RIVER_MOUTH_FAN_SHARPNESS,
+    RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M, RIVER_MAX_WIDTH_M, RIVER_MIN_WIDTH_M,
+    RIVER_MOUTH_FAN_EXTRA, RIVER_MOUTH_FAN_SHARPNESS,
 };
 
 pub use super::constants::RIVER_MOUTH_FAN_ARC_CELLS;
 
-/// Render-side ribbon adjustments — keep in sync with `river-geometry.ts`'s
-/// `RIVER_WIDTH_SCALE` and `RIVER_WIDTH_PAD_M`.
-pub const RIVER_RIBBON_WIDTH_SCALE: f32 = 1.5;
-pub const RIVER_RIBBON_WIDTH_PAD_M: f32 = 1.0;
+/// Hard cap (visible water meters — `baked_width + 2 × carve_taper`) above
+/// which no bridge is placed and road A* refuses to cross. Matches the wide
+/// bridge model's deck length so the deck ends always land on solid bank
+/// past the river's depth-fade contour.
+pub const BRIDGE_MAX_VISIBLE_WIDTH_M: f32 = 28.0;
 
-/// Hard cap (rendered ribbon meters) above which no bridge is placed and
-/// road A* refuses to cross. Wider crossings are visually implausible for
-/// the catalog's stone bridge models and almost always sit in the
-/// mouth-fan / delta zone.
-pub const BRIDGE_MAX_VISIBLE_WIDTH_M: f32 = 29.0;
-
-/// Baked-width equivalent of [`BRIDGE_MAX_VISIBLE_WIDTH_M`], used by
-/// callers that only see baked widths (road A* prediction, before the
-/// ribbon expansion).
+/// Baked-width equivalent of [`BRIDGE_MAX_VISIBLE_WIDTH_M`] under the
+/// worst-case natural taper (`RIVER_CARVE_TAPER_MIN + EXTRA` at
+/// `flow_norm = 1`). Conservative for distributary branches, which carry a
+/// shorter `RIVER_MOUTH_BRANCH_TAPER_M` taper — their visible width is
+/// always smaller than this estimate predicts, so the gate over-detours
+/// rather than committing A* to a route the bake-time selector then
+/// refuses. Used by road A* prediction (`RiverField`) and settlement
+/// placement (`wide_river_cell_mask`), both of which see only baked widths
+/// before the per-vertex taper resolves.
 pub const BRIDGE_MAX_BAKED_WIDTH_M: f32 =
-    (BRIDGE_MAX_VISIBLE_WIDTH_M - RIVER_RIBBON_WIDTH_PAD_M * 2.0) / RIVER_RIBBON_WIDTH_SCALE;
+    BRIDGE_MAX_VISIBLE_WIDTH_M - 2.0 * (RIVER_CARVE_TAPER_MIN_M + RIVER_CARVE_TAPER_EXTRA_M);
 
 // Pre-folded mouth-fan curve coefficients. `s(t) = (1/(k·t+1) - 1/(1+k)) · (1+k)/k`
 // peaks at 1.0 at the mouth (t=0) and decays to 0 at t=1.
@@ -70,12 +72,6 @@ pub fn mouth_fan_factor(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     let s = (1.0 / (MOUTH_FAN_K * t + 1.0) - MOUTH_FAN_INV_ONE_PLUS_K) * MOUTH_FAN_S_NORM;
     1.0 + RIVER_MOUTH_FAN_EXTRA * s
-}
-
-/// Convert a baked river width (m) to its rendered ribbon width.
-#[inline]
-pub fn baked_to_visible_width(baked: f32) -> f32 {
-    baked * RIVER_RIBBON_WIDTH_SCALE + RIVER_RIBBON_WIDTH_PAD_M * 2.0
 }
 
 /// Per-cell boolean mask: `true` where any river polyline's predicted baked

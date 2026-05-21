@@ -270,12 +270,7 @@ fn carve_at_point_detailed(
     let width = lerp(seg.width_a, seg.width_b, t);
     let (half_width, natural_taper, depth) = segment_carve_params(flow_norm, width);
     let bed_floor = segment_bed_floor(seg, width, t);
-    // Distributary branches replace the gentle 3–10 m bank with a steeper
-    // ~2 m cut as the bed sinks sub-sea — a 0.15 m channel ringed by a 10 m
-    // slope looks like a crater. Lerp on bed_floor so the apex (bed_floor ≈
-    // 0) keeps the natural bank and only the seaward end cuts steep.
-    let branch_t = smoothstep(0.0, -RIVER_MOUTH_BRANCH_BED_Y_M, -bed_floor);
-    let taper = lerp(natural_taper, RIVER_MOUTH_BRANCH_TAPER_M, branch_t);
+    let taper = branch_aware_taper(natural_taper, bed_floor);
     let max_carve_depth = (current_h - bed_floor).max(0.0);
     let signed_d = signed_distance_to_segment(world_x, world_z, seg, t);
     let outside_strength = bend_outside_strength(segs, idx, t);
@@ -302,6 +297,33 @@ fn carve_at_point_detailed(
         max_carve_depth,
         carve,
     })
+}
+
+/// Distributary branches replace the gentle 3–10 m bank with a steeper
+/// ~5 m cut as the bed sinks sub-sea — a 0.15 m channel ringed by a 10 m
+/// slope looks like a crater. Lerps on `bed_floor` so the apex
+/// (`bed_floor ≈ 0`) keeps the natural bank and only the seaward end cuts
+/// steep.
+#[inline]
+fn branch_aware_taper(natural_taper: f32, bed_floor: f32) -> f32 {
+    let branch_t = smoothstep(0.0, -RIVER_MOUTH_BRANCH_BED_Y_M, -bed_floor);
+    lerp(natural_taper, RIVER_MOUTH_BRANCH_TAPER_M, branch_t)
+}
+
+/// Effective carve taper (m) at parametric position `t` along a segment.
+/// Natural reaches use `RIVER_CARVE_TAPER_MIN + flow_norm × EXTRA`; segments
+/// whose `segment_bed_floor` dips sub-sea (i.e. distributary branches) lerp
+/// toward the steeper `RIVER_MOUTH_BRANCH_TAPER_M` so the bank cut matches
+/// what the heightmap actually carves. Bridge placement reads this as the
+/// half-width that the river renderer's depth-fade contour occupies —
+/// visible water spans `width + 2 × taper`.
+#[inline]
+pub(super) fn segment_carve_taper_at(seg: &RiverSegment, t: f32) -> f32 {
+    let flow_norm = lerp(seg.flow_norm_a, seg.flow_norm_b, t);
+    let natural_taper = RIVER_CARVE_TAPER_MIN_M + RIVER_CARVE_TAPER_EXTRA_M * flow_norm;
+    let width = lerp(seg.width_a, seg.width_b, t);
+    let bed_floor = segment_bed_floor(seg, width, t);
+    branch_aware_taper(natural_taper, bed_floor)
 }
 
 /// Bed-floor target in meters for a river segment. Natural widths return

@@ -1,10 +1,11 @@
 //! Bridge placement at road↔river crossings.
 //!
 //! Run after `roads::snap_crossings_to_grid`: every interior road cell that
-//! coincides with a river cell becomes one bridge. Width at the crossing is
-//! interpolated from the river's per-vertex widths; the rendered ribbon is
-//! `width_baked × 1.5 + 2.0` (see `client/src/lib/utils/river-geometry.ts`),
-//! so `BRIDGE_WIDE_RIBBON_M` is compared against that to pick the wide
+//! coincides with a river cell becomes one bridge. Visible water width at
+//! the crossing is `baked_width + 2 × segment_carve_taper_at(...)` — the
+//! same envelope `river_field::compute_pixel` uses to collapse surface→bed,
+//! so it matches the depth-fade contour the player sees. That width is
+//! compared against `BRIDGE_WIDE_RIBBON_M` to pick the wide
 //! (`big_stone_bridge`) vs the narrow (`stone_bridge`) model.
 //!
 //! Bridge Y sits at the midpoint of the surface the deck ends meet:
@@ -37,14 +38,18 @@ use super::super::roads::RoadNetwork;
 use super::super::vector_features::{nearest_river_segment, river_segments_near_tile};
 use super::constants::{TILE_DIM, VERTS_PER_SIDE};
 use super::context::BakeContext;
-use super::heightmap::sample_natural_height_single;
-use super::river_geom::{baked_to_visible_width, BRIDGE_MAX_VISIBLE_WIDTH_M};
+use super::heightmap::{sample_natural_height_single, segment_carve_taper_at};
+use super::river_geom::BRIDGE_MAX_VISIBLE_WIDTH_M;
 use super::settlement_flatten::{flatten_height_at, SettlementFlatten};
 
-/// Width threshold (rendered ribbon meters) above which the wider bridge
-/// model is selected. Matches the user-facing river width, not the baked
-/// segment width.
-const BRIDGE_WIDE_RIBBON_M: f32 = 14.0;
+/// Width threshold (visible water meters — `width + 2 × carve_taper`)
+/// above which the wider `big_stone_bridge` is selected over the narrow
+/// `stone_bridge`. Tuned against the seed-42 world's river distribution
+/// (most crossings sit at visible 19–25 m; only a handful of distributary
+/// branches and headwater stubs fall below ~16 m), so the narrow model
+/// stays visible on the smallest crossings while every mature river gets
+/// the wide deck.
+const BRIDGE_WIDE_RIBBON_M: f32 = 16.0;
 
 /// Smoothstep blend distance (m) past the rotated deck rect, matching the
 /// editor's `FLATTEN_BLEND_RADIUS = 2`.
@@ -64,12 +69,55 @@ pub struct BridgeModel {
     /// minLocalY + buryDepth.
     pub min_local_y: f32,
     pub flatten_bury_depth: f32,
+    /// Half-deck length (m, along local Z) over which the heightmap is
+    /// flattened at each deck end. The arch span between the two foot zones
+    /// is left alone so the river carve survives — otherwise the raised
+    /// channel bed pushes `surfaceY = bed + 0.5` above the dipping deck
+    /// profile and engulfs the foot. Loaded from the catalog's explicit
+    /// `flattenFootLengthZ` field when present; otherwise derived from
+    /// `deckYSamples` via [`foot_length_from_samples`].
+    pub flatten_foot_length_z: f32,
+    /// Half-width (m, along local X) of the foot flatten rect — symmetric
+    /// around the deck centreline. The flatten can extend past the deck's
+    /// own X bounds when the abutment should spread laterally onto the
+    /// bank. Loaded from the catalog's `flattenFootWidthX` field
+    /// (interpreted as full width); defaults to the deck's X half-width
+    /// when absent.
+    pub flatten_foot_half_width_x: f32,
 }
 
 impl BridgeModel {
     fn flatten_target_offset(&self) -> f32 {
         self.min_local_y + self.flatten_bury_depth
     }
+}
+
+/// Deck Y (local) below which a sample is considered to be part of the
+/// foot — the deck rests on the abutment, not the arch span. Tuned so the
+/// stone bridges' last 1–3 m of deck at each end (where the arch finishes
+/// curving down) reads as foot.
+const FOOT_DECK_Y_THRESHOLD_M: f32 = 0.5;
+
+/// Derive the foot length (m along local Z) from the per-bridge
+/// `deckYSamples` array. Samples are expected to run from the deck centre
+/// (`samples[0]`, peak of the arch) outward to the deck end
+/// (`samples[len-1]`, foot), evenly spaced across `[0, deck_max_z]`. Returns
+/// the length of the outermost run of samples whose deck Y stays below
+/// [`FOOT_DECK_Y_THRESHOLD_M`].
+pub fn foot_length_from_samples(samples: &[f32], deck_max_z: f32) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let foot_count = samples
+        .iter()
+        .rev()
+        .take_while(|&&y| y < FOOT_DECK_Y_THRESHOLD_M)
+        .count();
+    if foot_count == 0 {
+        return 0.0;
+    }
+    let z_per_sample = deck_max_z / (samples.len() - 1) as f32;
+    foot_count as f32 * z_per_sample
 }
 
 /// Pair of bridge models the bake selects between — narrow for rivers
@@ -128,10 +176,10 @@ pub struct BridgeFlatten {
     center_x: f32,
     center_z: f32,
     rot_rad: f32,
-    deck_min_x: f32,
-    deck_max_x: f32,
     deck_min_z: f32,
     deck_max_z: f32,
+    foot_length_z: f32,
+    foot_half_width_x: f32,
     target_y: f32,
     /// Pre-computed world AABB of the rotated deck rect plus blend radius;
     /// used by `apply_bridge_flatten` to skip vertices outside the rect.
@@ -220,15 +268,22 @@ pub fn detect_bridges(
                 wz + probe_margin,
                 0.0,
             );
-            let baked_width = match nearest_river_segment(wx, wz, &local_segs) {
+            // Visible water width = baked width + 2 × effective carve taper.
+            // The renderer's depth-fade collapses surface→bed at exactly
+            // that lateral envelope (see `river_field::compute_pixel`), so
+            // the bridge has to span from one fade edge to the other.
+            // Distributary branches carry a shorter taper than natural
+            // reaches; pulling the taper from the segment keeps both kinds
+            // measured by the same yardstick the player sees.
+            let visible_width = match nearest_river_segment(wx, wz, &local_segs) {
                 Some((_, idx, t)) => {
                     let s = &local_segs[idx];
-                    s.width_a + (s.width_b - s.width_a) * t
+                    let baked = s.width_a + (s.width_b - s.width_a) * t;
+                    let taper = segment_carve_taper_at(s, t);
+                    baked + 2.0 * taper
                 }
                 None => continue,
             };
-
-            let visible_width = baked_to_visible_width(baked_width);
             // Safety net for the rare case where a road still threads a
             // wide cell — A* exempts start/goal endpoints from its
             // wide-river impassability mask.
@@ -334,12 +389,17 @@ pub fn group_flattens_by_tile(
         let rot_rad = p.rotation.to_radians();
         let cos = rot_rad.cos();
         let sin = rot_rad.sin();
-        // Rotated rect AABB (mirrors `objectFootprint.ts::rotatedRectAabb`).
+        // Rotated AABB of the foot-flatten footprint (the two foot rects
+        // share a common X half-width, so the union's local-space corners
+        // sit at (±foot_half_width_x, ±deck_max_z)). The arch span in the
+        // middle isn't flattened, but it's bounded by the same envelope so
+        // the sweep AABB is identical.
+        let half_x = model.flatten_foot_half_width_x;
         let mut a_min_x = f32::INFINITY;
         let mut a_max_x = f32::NEG_INFINITY;
         let mut a_min_z = f32::INFINITY;
         let mut a_max_z = f32::NEG_INFINITY;
-        for &lx in &[model.deck_min_x, model.deck_max_x] {
+        for &lx in &[-half_x, half_x] {
             for &lz in &[model.deck_min_z, model.deck_max_z] {
                 let wx = lx * cos + lz * sin;
                 let wz = -lx * sin + lz * cos;
@@ -365,10 +425,10 @@ pub fn group_flattens_by_tile(
             center_x: p.x,
             center_z: p.z,
             rot_rad,
-            deck_min_x: model.deck_min_x,
-            deck_max_x: model.deck_max_x,
             deck_min_z: model.deck_min_z,
             deck_max_z: model.deck_max_z,
+            foot_length_z: model.flatten_foot_length_z,
+            foot_half_width_x: half_x,
             target_y,
             world_min_x,
             world_max_x,
@@ -426,9 +486,14 @@ mod canonical_tests {
     }
 }
 
-/// Apply each flatten directive to the tile's heights buffer. Replicates the
-/// distance-to-rotated-rect blend from
-/// `client/src/lib/managers/terrain-height-brushes.ts::flattenRotatedRect`.
+/// Apply each flatten directive to the tile's heights buffer. The flatten
+/// hits only the two foot rects at the deck ends — `foot_length_z` along
+/// local Z at each end, full deck width along local X. The arch span between
+/// the foot zones keeps its river-carved channel so the runtime's
+/// `surfaceY = bed + 0.5` doesn't rise into the dipping deck profile and
+/// engulf the foot. Replicates the distance-to-rotated-rect blend from
+/// `client/src/lib/managers/terrain-height-brushes.ts::flattenRotatedRect`
+/// but with two rects instead of one.
 pub(super) fn apply_bridge_flatten(
     heights: &mut [f32],
     tile_origin_x: f32,
@@ -440,6 +505,12 @@ pub(super) fn apply_bridge_flatten(
         let cos = fl.rot_rad.cos();
         let sin = fl.rot_rad.sin();
         let blend = BRIDGE_FLATTEN_BLEND_M;
+        // Two foot rects: one at each deck end, `foot_length_z` long along
+        // local Z, full deck width along local X.
+        let foot_a_lo = fl.deck_min_z;
+        let foot_a_hi = fl.deck_min_z + fl.foot_length_z;
+        let foot_b_lo = fl.deck_max_z - fl.foot_length_z;
+        let foot_b_hi = fl.deck_max_z;
         // Restrict the per-vertex sweep to the rotated-rect AABB; outside
         // that band the blend evaluates to zero and the loop is wasted.
         let i0 = ((fl.world_min_x - tile_origin_x).floor() as i32).clamp(0, last) as usize;
@@ -456,8 +527,10 @@ pub(super) fn apply_bridge_flatten(
                 // (matches `flattenRotatedRect`'s lx/lz formulae).
                 let lx = dx * cos - dz * sin;
                 let lz = dx * sin + dz * cos;
-                let ddx = (fl.deck_min_x - lx).max(0.0).max(lx - fl.deck_max_x);
-                let ddz = (fl.deck_min_z - lz).max(0.0).max(lz - fl.deck_max_z);
+                let ddx = (lx.abs() - fl.foot_half_width_x).max(0.0);
+                let ddz_a = (foot_a_lo - lz).max(0.0).max(lz - foot_a_hi);
+                let ddz_b = (foot_b_lo - lz).max(0.0).max(lz - foot_b_hi);
+                let ddz = ddz_a.min(ddz_b);
                 let dist = (ddx * ddx + ddz * ddz).sqrt();
                 let idx = j * VERTS_PER_SIDE + i;
                 if dist <= 0.0 {

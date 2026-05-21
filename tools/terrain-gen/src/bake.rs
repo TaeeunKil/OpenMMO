@@ -568,14 +568,42 @@ fn load_bridge_catalog() -> Option<bridges::BridgeCatalog> {
             .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))?;
         let bridge = entry.get("bridge")?;
         let opt_f32 = |key: &str| entry.get(key).and_then(|v| v.as_f64()).map(|v| v as f32);
+        let deck_max_z = bridge.get("deckMaxZ")?.as_f64()? as f32;
+        let deck_min_x = bridge.get("deckMinX")?.as_f64()? as f32;
+        let deck_max_x = bridge.get("deckMaxX")?.as_f64()? as f32;
+        // Explicit `flattenFootLengthZ` in the catalog wins so the design
+        // can override the deckYSamples-derived value when a model's arch
+        // shape isn't a good proxy for how far onto the bank the foundation
+        // should land.
+        let foot_length = opt_f32("flattenFootLengthZ").unwrap_or_else(|| {
+            let samples: Vec<f32> = bridge
+                .get("deckYSamples")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_f64().map(|f| f as f32))
+                        .collect()
+                })
+                .unwrap_or_default();
+            bridges::foot_length_from_samples(&samples, deck_max_z)
+        });
+        // `flattenFootWidthX` is the full lateral width of the foot rect;
+        // store it as half-width since the rect is symmetric. Default to
+        // the deck's own X half-width so models without an explicit value
+        // flatten exactly under the deck.
+        let foot_half_width_x = opt_f32("flattenFootWidthX")
+            .map(|w| w * 0.5)
+            .unwrap_or((deck_max_x - deck_min_x) * 0.5);
         Some(bridges::BridgeModel {
             id: id.to_string(),
-            deck_min_x: bridge.get("deckMinX")?.as_f64()? as f32,
-            deck_max_x: bridge.get("deckMaxX")?.as_f64()? as f32,
+            deck_min_x,
+            deck_max_x,
             deck_min_z: bridge.get("deckMinZ")?.as_f64()? as f32,
-            deck_max_z: bridge.get("deckMaxZ")?.as_f64()? as f32,
+            deck_max_z,
             min_local_y: opt_f32("minLocalY").unwrap_or(0.0),
             flatten_bury_depth: opt_f32("flattenBuryDepth").unwrap_or(0.0),
+            flatten_foot_length_z: foot_length,
+            flatten_foot_half_width_x: foot_half_width_x,
         })
     };
     Some(bridges::BridgeCatalog {
