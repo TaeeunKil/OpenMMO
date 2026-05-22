@@ -12,8 +12,8 @@ use super::super::global_map::GlobalMap;
 use super::super::grid::{fold_x_delta_f32, MinF32};
 use super::super::rivers::RiverMap;
 use super::super::tile_bake::river_geom::{
-    flow_log_inv, flow_to_width, mouth_fan_factor, BRIDGE_MAX_BAKED_WIDTH_M,
-    RIVER_MOUTH_FAN_ARC_CELLS,
+    flow_log_inv, is_delta_cell, polyline_arc_lengths_cells, predicted_visible_width,
+    BRIDGE_MAX_VISIBLE_WIDTH_M,
 };
 use super::axis::{pick_river_axis, step_axis, SnapAxis};
 
@@ -79,12 +79,15 @@ const RIVER_BUFFER_PENALTY: f32 = 1.5;
 const EXISTING_ROAD_FACTOR: f32 = 0.5;
 
 /// Per-cell river overlay used by A*. `mask[i]` is 0 for non-river,
-/// [`MASK_RIVER`] for normal river cells, and [`MASK_WIDE`] for cells
-/// whose predicted baked width exceeds [`BRIDGE_MAX_BAKED_WIDTH_M`] —
-/// road A* refuses to step into wide cells (except as start/goal) so
-/// roads detour upstream to a narrower crossing. `tangent` /
-/// `axis` / `near_river` describe geometry around the river cells for
-/// the perpendicular-cross gate and breathing-room buffer.
+/// [`MASK_RIVER`] for normal river cells, and [`MASK_WIDE`] for cells that
+/// either sit inside a sea-bound river's post-apex delta region (where
+/// `apply_mouth_distributaries` would replace one channel with several
+/// branches a single bridge can't span coherently) or carry a predicted
+/// natural visible width above [`BRIDGE_MAX_VISIBLE_WIDTH_M`]. Road A*
+/// refuses to step into wide cells (except as start/goal) so roads detour
+/// **upstream of the apex** to find a single-channel crossing.
+/// `tangent` / `axis` / `near_river` describe geometry around the river
+/// cells for the perpendicular-cross gate and breathing-room buffer.
 pub(super) struct RiverField {
     mask: Vec<u8>,
     tangent: Vec<(f32, f32)>,
@@ -107,7 +110,6 @@ impl RiverField {
         let mut axis = vec![SnapAxis::Horizontal; total];
         let res_f = res as f32;
         let inv_log_max = flow_log_inv(river_map.max_flow());
-        let inv_arc = 1.0 / RIVER_MOUTH_FAN_ARC_CELLS.max(1e-3);
 
         for poly in &river_map.rivers {
             let pts = &poly.points;
@@ -115,21 +117,8 @@ impl RiverField {
             if n < 2 {
                 continue;
             }
-            // Two-pass: arc lengths first (mouth-fan needs `total - lens[i]`),
-            // then per-vertex outputs. X-wrap fold so seam-crossing rivers
-            // measure their on-grid distance rather than the wrap.
-            let mut lens: Vec<f32> = Vec::with_capacity(n);
-            lens.push(0.0);
-            let mut cumulative = 0.0f32;
-            for i in 1..n {
-                let (px, py) = pts[i - 1];
-                let (qx, qy) = pts[i];
-                let dx = fold_x_delta_f32(qx as f32 - px as f32, res_f);
-                let dy = qy as f32 - py as f32;
-                cumulative += (dx * dx + dy * dy).sqrt();
-                lens.push(cumulative);
-            }
-            let total_arc = cumulative;
+            let lens = polyline_arc_lengths_cells(pts, res_f);
+            let total_arc = *lens.last().unwrap();
             let (end_x, end_y) = pts[n - 1];
             let mouth_in_sea = map.land_mask[(end_y as usize) * res + (end_x as usize)] == 0;
 
@@ -144,19 +133,12 @@ impl RiverField {
                 tangent[idx] = (dx / len, dy / len);
                 axis[idx] = pick_river_axis(dx / len, dy / len);
 
-                let base_w = flow_to_width(poly.flow[i], inv_log_max);
-                let mouth_factor = if mouth_in_sea {
-                    mouth_fan_factor((total_arc - lens[i]) * inv_arc)
-                } else {
-                    1.0
-                };
                 // Multiple polylines can touch the same cell; widen-wins
                 // so the wide flag survives a narrower polyline overwrite.
-                let new_mark = if base_w * mouth_factor > BRIDGE_MAX_BAKED_WIDTH_M {
-                    MASK_WIDE
-                } else {
-                    MASK_RIVER
-                };
+                let is_wide = is_delta_cell(mouth_in_sea, total_arc - lens[i])
+                    || predicted_visible_width(poly.flow[i], inv_log_max)
+                        > BRIDGE_MAX_VISIBLE_WIDTH_M;
+                let new_mark = if is_wide { MASK_WIDE } else { MASK_RIVER };
                 if new_mark > mask[idx] {
                     mask[idx] = new_mark;
                 }
@@ -325,7 +307,8 @@ pub(super) fn a_star(
                     continue;
                 }
                 // Wide cells are impassable except as start/goal so a
-                // settlement on a wide cell can still terminate a road.
+                // settlement that lands on a wide-marked cell can still
+                // terminate a road.
                 if ni != start && ni != goal && river_field.mask[ni] == MASK_WIDE {
                     continue;
                 }
