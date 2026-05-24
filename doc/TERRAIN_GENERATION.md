@@ -49,7 +49,7 @@
 | # | 단계 | 출력 필드 | 기법 |
 |---|------|-----------|------|
 | 1 | 대륙/바다 마스크 | `continent_potential`, `land_mask`, `sea_level_potential` | fBm + 반경 edge falloff + quantile threshold |
-| 2 | 고도 레이어링 | `elevation` (f32 meters) | Phase 1 potential + 산지 마스크(secondary fBm) modulated amplitude |
+| 2 | 고도 레이어링 | `elevation` (f32 meters) | 단일 fBm (X-wrap) + Y-border 산맥 wall + config hotspots/carves. 능선/계곡은 Phase 3 erosion 이 만든다. |
 | 3 | Hydraulic erosion | `elevation` 갱신 | dandrino grid-field 시뮬레이션 (rain → 정규화 gradient → semi-Lagrangian 이웃 샘플 → capacity 기반 침식/퇴적 → forward advect → gaussian slippage → velocity → evaporate). 1024² 다운샘플로 돌리고 결과를 4096²로 업샘플 |
 | 4 | 하천 추출 | `flow_accumulation`, `rivers: Vec<Polyline>` | Flow field 계산 → 임계값 이상 셀을 trace해 polyline으로 |
 | 5 | 정착지 배치 | `settlements: Vec<Settlement>` | Poisson-disk + 지형 적합도 스코어 (해안/강변/평야 가산점) |
@@ -197,11 +197,13 @@ preview는 수 초 안에 끝나야 반복 튜닝이 실용적임. 그래서 Pha
 CLI의 모든 인자는 기본값 그대로이며, seed만 지정했다:
 
 ```
-cargo run -p terrain-gen --release -- bake --seed 42 --out data/terrain
+cargo run -p terrain-gen --release -- bake --seed 42
 ```
 
-주요 파라미터 (CLI 기본값):
-- `--seed 42` (master seed)
+주요 파라미터:
+- `--seed 42` — master seed. **CLI 기본값은 `7`** 이지만 현재 월드는 42 로
+  베이크되어 있어 재현하려면 명시적으로 지정해야 한다. (config 의
+  hand-tuned hotspots 도 seed 42 기준으로 잡혀 있음.)
 - `--res 4096` (글로벌 맵 해상도, 8 m/cell)
 - `--sea 0.30` (타겟 해수 비율 → 필터 슬립으로 실측 ~0.37)
 - `--wavelength 700`, `--octaves 4`, `--gain 0.5` (대륙 fBm)
@@ -238,10 +240,10 @@ cargo run -p terrain-gen --release -- bake --seed 42 --out data/terrain
   변경 없음.
 - **서버**: 기존 `HeightSampler`, `TerrainIO`가 그대로 파일을 읽는다.
   바뀌는 것 없음.
-- **클라이언트 `GenerateTerrainDialog.svelte`**: 장기적으로 WASM
-  바인딩을 통해 같은 코드를 미리보기에 쓸 수 있지만, Phase 7까지는
-  기존 TS 생성기를 건드리지 않는다. bake 완료 후 기존 TS 생성기는
-  제거/deprecate 판단.
+- **클라이언트 생성 UI 폐기**: 옛 `GenerateTerrainDialog.svelte` 는 제거
+  되었고, `client/src/lib/terrain/` 에는 런타임 헬퍼만 남는다 (스플랫
+  인코딩, 상수, 미니맵 헬퍼). 절차적 생성은 전적으로 Rust 파이프라인
+  소관.
 - **No-spawn zones, 정착지**: `worldgen.json`에 저장된 정착지 위치
   데이터는 기존 `NoSpawnZone` 메커니즘과 연계 가능 (자동으로 마을
   중심 반경을 no-spawn으로 등록).
@@ -269,14 +271,17 @@ cargo run -p terrain-gen --release -- bake --seed 42 --out data/terrain
 
 ## 10. 미결정 / 추후 결정
 
-- **하천 수원**: 고산 피크에서 시작 vs flow accumulation 임계값으로
-  자동. 후자가 더 자연스러움.
-- **도로 곡선화**: A* 출력은 각진 경로. Chaikin smoothing 또는 Catmull-Rom
-  으로 부드럽게 할지.
 - **지하 동굴/지하 구조**: 현 시스템 범위 밖. 하이트맵 위에 별도
   오브젝트로 배치 (기존 정책 그대로).
 - **바이옴 구분**: 온도/습도 노이즈로 더 세분(타이가/사막/열대 등)할지.
   현재는 고도/경사/수원 거리만 쓴다.
+- **해안 sub-cell smoothing**: §11.1 참조 — Marching Squares staircase
+  잔존, `continent_potential` isocontour 로 대체 필요.
+
+> 과거 미결정이었으나 결정됨: **하천 수원** — Phase 4 는 pit-fill + D8 flow
+> 위에서 peak trace 로 수원을 찍는다 (peak + flow 결합). **도로 곡선화** —
+> A* 출력 polyline 은 각진 채로 저장하고, 베이크 시
+> `tile_bake::context::smooth_polylines` 가 Chaikin 으로 처리한다.
 
 ## 11. Vector feature distance (현재 구조)
 
@@ -323,8 +328,8 @@ cargo run -p terrain-gen --release -- bake --seed 42 --out data/terrain
 | 1 — 대륙/바다 | `continent.rs` + `growth.rs` | Eden 성장 + union-find + island filter + isthmus cut. X-periodic. |
 | 2 — 고도 | `elevation.rs` | Single fBm + Y-border 산맥 wall + config hotspots/carves. 능선/계곡은 Phase 3 erosion 이 만든다. |
 | 3 — Erosion | `erosion.rs` | dandrino `simulation.py` 포팅. 1024² grid 에서 `ceil(1.4 · sim_res)` iter, 4096² 로 업샘플. |
-| 4 — 강 | `rivers.rs` | Barnes 2014 pit-fill → D8 → peak trace + meander / distributary / self-overlap 후처리. `seed_river_gap_mountains` 로 강 없는 저지대에 산 추가 → 재추출. |
-| 5 — 정착지 | `settlements.rs` | habitability 필드 (coast/river dist, slope) + 3-phase greedy (drainage basin / island / coverage gap-fill). |
+| 4 — 강 | `rivers.rs` | Barnes 2014 pit-fill → D8 → peak trace + meander / distributary / self-overlap 후처리. **Phase 4b**: `elevation::seed_river_gap_mountains` 로 강 없는 저지대에 산 hotspot 추가 → flow + rivers 재추출. **Phase 4c**: `elevation::seed_small_island_hills` + `rivers::extract_small_island_rivers` 로 작은 섬에 구릉/강 추가. |
+| 5 — 정착지 | `settlements.rs` | habitability 필드 (coast/river dist, slope) + 4-phase greedy (A: 강 drainage basin 별 1 정착지 / B: 내륙 평야 / C: 고립 섬 / D: coverage gap-fill). |
 | 6 — 도로 | `roads/` | Prim MST + K-NN 추가 엣지 + 경사 페널티 A*. `merge_parallel_runs`, `snap_crossings_to_grid` 후처리로 bridge 위치 정렬. |
 | 7 — 타일 베이크 | `tile_bake/` | 65×65 heightmap + 64×64 V2 splatmap + RFD1 강 field (강 있는 타일만). 강 carve = flow-aware depth/width, bed floor clamp. |
 | 8 — 초목 | `vegetation.rs` | Phase 7 의 splatmap vegMeta 바이트(230–249) 를 읽어 tree V1 + grass V3 바이너리를 per-tile 출력. |
