@@ -31,6 +31,20 @@ pub fn run(config: &WorldGenConfig, tile_x: i32, tile_z: i32) -> Result<()> {
         river_map = rivers::compute_flow(&map);
         rivers::extract_rivers(&map, &mut river_map, min_peak, 20);
     }
+    let island_out = elevation::seed_small_island_hills(&mut map);
+    if !island_out.hotspots.is_empty() {
+        let saved_rivers = std::mem::take(&mut river_map.rivers);
+        river_map = rivers::compute_flow(&map);
+        river_map.rivers = saved_rivers;
+        rivers::extract_small_island_rivers(
+            &map,
+            &mut river_map,
+            &island_out.island_cells,
+            config.small_island_river_min_peak_m,
+            config.small_island_river_min_length as usize,
+            config.small_island_river_peak_spacing_cells,
+        );
+    }
 
     let fields = settlements::compute_habitability_fields(&map, &river_map);
     let settlements_list = settlements::place_settlements_with_fields(&map, &river_map, &fields);
@@ -168,6 +182,20 @@ pub fn probe(config: &WorldGenConfig, points: &[(f32, f32)]) -> Result<()> {
     if !added.is_empty() {
         river_map = rivers::compute_flow(&map);
         rivers::extract_rivers(&map, &mut river_map, min_peak, 20);
+    }
+    let island_out = elevation::seed_small_island_hills(&mut map);
+    if !island_out.hotspots.is_empty() {
+        let saved_rivers = std::mem::take(&mut river_map.rivers);
+        river_map = rivers::compute_flow(&map);
+        river_map.rivers = saved_rivers;
+        rivers::extract_small_island_rivers(
+            &map,
+            &mut river_map,
+            &island_out.island_cells,
+            config.small_island_river_min_peak_m,
+            config.small_island_river_min_length as usize,
+            config.small_island_river_peak_spacing_cells,
+        );
     }
 
     let fields = settlements::compute_habitability_fields(&map, &river_map);

@@ -15,7 +15,7 @@
 
 use super::config::{ElevationHotspot, WorldGenConfig};
 use super::global_map::GlobalMap;
-use super::grid::{bfs_distance_extend_from_cell, bfs_distance_from};
+use super::grid::{bfs_distance_extend_from_cell, bfs_distance_from, fold_x_delta_f32};
 use super::noise::{fbm_wrap_x, smoothstep, PerlinNoise, PerlinNoise3D};
 use super::rivers::{RiverMap, RIVER_PEAK_ELEVATION_FRAC};
 use super::vector_features::project_point_to_segment;
@@ -321,6 +321,143 @@ pub fn seed_river_gap_mountains(
 
     apply_hotspots_to(&map.config, &map.land_mask, &mut map.elevation_m, &added);
     added
+}
+
+/// Phase 3c: stamp a gentle hill on every small land component so
+/// that scattered islands read as islands rather than featureless
+/// flat discs.
+///
+/// The erosion sim drains all of a small island's accumulated water
+/// (and the sediment it carries) into the surrounding sea every
+/// iteration, so what enters Phase 4 is a sub-pivot pancake that the
+/// `plain_band_compression` then squashes essentially to the
+/// `min_land_height_m` floor. Adding a hotspot per small component
+/// here gives each island a visible crown without changing how
+/// continents are shaped.
+///
+/// Output of [`seed_small_island_hills`]: the per-island hotspots
+/// stamped onto `map.elevation_m`, plus the flat list of cell
+/// indices that belong to any small-island component. The cell list
+/// lets downstream passes (e.g. river extraction) iterate just the
+/// island cells without re-scanning the full `res²` grid.
+pub struct SmallIslandHillsOut {
+    pub hotspots: Vec<ElevationHotspot>,
+    pub island_cells: Vec<u32>,
+}
+
+/// No-op when `small_island_hill_peak_m == 0` or
+/// `small_island_hill_max_cells == 0`. See [`SmallIslandHillsOut`].
+pub fn seed_small_island_hills(map: &mut GlobalMap) -> SmallIslandHillsOut {
+    let peak_m = map.config.small_island_hill_peak_m;
+    let max_ref_cells = map.config.small_island_hill_max_cells;
+    if peak_m <= 0.0 || max_ref_cells == 0 {
+        return SmallIslandHillsOut {
+            hotspots: Vec::new(),
+            island_cells: Vec::new(),
+        };
+    }
+    let max_cells = map.config.scaled_area_cells(max_ref_cells) as usize;
+    let radius_frac = map.config.small_island_hill_radius_frac.clamp(0.05, 1.0);
+    let res = map.config.global_res as usize;
+    let total = res * res;
+    let mpc = map.config.meters_per_cell();
+    let origin = map.config.world_size_m as f32 * 0.5;
+
+    let coast_dist = bfs_distance_from(&map.land_mask, res, 0, None);
+
+    let mut visited = vec![false; total];
+    let mut component: Vec<usize> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut added: Vec<ElevationHotspot> = Vec::new();
+    let mut island_cells: Vec<u32> = Vec::new();
+    let res_i = res as i32;
+    let res_f = res as f32;
+
+    for start in 0..total {
+        if map.land_mask[start] == 0 || visited[start] {
+            continue;
+        }
+        component.clear();
+        stack.clear();
+        stack.push(start);
+        visited[start] = true;
+        let mut over_cap = false;
+
+        while let Some(i) = stack.pop() {
+            if !over_cap {
+                component.push(i);
+                if component.len() > max_cells {
+                    over_cap = true;
+                    component.clear();
+                }
+            }
+            let x = i % res;
+            let y = i / res;
+            let left = if x == 0 { res - 1 } else { x - 1 };
+            let right = if x + 1 == res { 0 } else { x + 1 };
+            let mut try_push = |n: usize| {
+                if map.land_mask[n] == 1 && !visited[n] {
+                    visited[n] = true;
+                    stack.push(n);
+                }
+            };
+            try_push(y * res + left);
+            try_push(y * res + right);
+            if y > 0 {
+                try_push((y - 1) * res + x);
+            }
+            if y + 1 < res {
+                try_push((y + 1) * res + x);
+            }
+        }
+        if over_cap {
+            continue;
+        }
+
+        // X-wrap-aware centroid: anchor on the first cell and add
+        // each subsequent cell's shortest-periodic offset, so an
+        // island straddling x=0 still ends up with a sensible mean.
+        let anchor = component[0];
+        let anchor_x = (anchor % res) as f32;
+        let anchor_y = (anchor / res) as f32;
+        let mut sum_dx = 0.0f32;
+        let mut sum_dy = 0.0f32;
+        let mut max_d: u16 = 0;
+        for &i in &component {
+            island_cells.push(i as u32);
+            sum_dx += fold_x_delta_f32((i % res) as f32 - anchor_x, res_f);
+            sum_dy += (i / res) as f32 - anchor_y;
+            let d = coast_dist[i];
+            if d != u16::MAX && d > max_d {
+                max_d = d;
+            }
+        }
+        if max_d == 0 {
+            continue;
+        }
+        let n = component.len() as f32;
+        let mean_x = anchor_x + sum_dx / n;
+        let cx = ((mean_x.round() as i32).rem_euclid(res_i)) as f32;
+        let cy = (anchor_y + sum_dy / n)
+            .round()
+            .clamp(0.0, (res - 1) as f32);
+        let world_x = (cx + 0.5) * mpc - origin;
+        let world_y = (cy + 0.5) * mpc - origin;
+        let radius_m = max_d as f32 * mpc * radius_frac;
+        added.push(ElevationHotspot {
+            center_x_m: world_x,
+            center_y_m: world_y,
+            radius_m,
+            peak_m,
+            cap_elev_m: None,
+        });
+    }
+
+    apply_hotspots_to(&map.config, &map.land_mask, &mut map.elevation_m, &added);
+    SmallIslandHillsOut {
+        hotspots: added,
+        island_cells,
+    }
 }
 
 #[cfg(test)]

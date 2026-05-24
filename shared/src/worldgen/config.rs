@@ -297,6 +297,49 @@ pub struct WorldGenConfig {
     /// section before the pattern flips. Larger = chunkier pattern.
     pub coast_cliff_wavelength_cells: f32,
 
+    /// Peak height (m) of automatic hills stamped on small land
+    /// components after erosion. Erosion grinds small islands —
+    /// every cell drains directly to sea — almost flat, so they
+    /// read as featureless beige discs in the hypso preview. This
+    /// pass detects each small component, places a hotspot at its
+    /// interior centroid with radius proportional to its
+    /// distance-to-coast, and bumps the elevation so the island
+    /// reads as an island. 0 disables the pass.
+    pub small_island_hill_peak_m: f32,
+
+    /// Component-size cutoff (in reference cells, area) for the
+    /// small-island hill pass. Land components with `≤ N` cells are
+    /// treated as small islands and receive a hill; larger
+    /// components already have erosion-carved relief and are
+    /// skipped. 0 disables.
+    pub small_island_hill_max_cells: u32,
+
+    /// Hotspot radius as a fraction of the island's max
+    /// distance-to-coast (the island's effective "inner radius").
+    /// Below 1.0 keeps the hill short of the shoreline so the
+    /// beach ramp can still pull the immediate coast down to
+    /// `coast_beach_max_height_m`.
+    pub small_island_hill_radius_frac: f32,
+
+    /// Peak-elevation threshold (m) for the small-island river pass.
+    /// Cells must clear this to qualify as a stream source on a
+    /// small island. Must be well below `small_island_hill_peak_m`
+    /// so the artificially stamped crowns reliably produce sources;
+    /// 0 disables the pass.
+    pub small_island_river_min_peak_m: f32,
+
+    /// Minimum polyline length (in cells) for an island river to be
+    /// kept. The mainland threshold (≈20) discards every plausible
+    /// island stream — small islands are only tens of cells across,
+    /// so this knob is independent. 0 disables the pass.
+    pub small_island_river_min_length: u32,
+
+    /// Minimum spacing (in cells, X-wrap aware) between two peaks
+    /// kept as island-river sources. Tight spacing yields multiple
+    /// streams per island; wider spacing keeps it to one stem per
+    /// crown.
+    pub small_island_river_peak_spacing_cells: u32,
+
     // --- Phase 5: settlements ---------------------------------------------
     /// Target number of settlements to place across the world. Greedy
     /// min-spacing selection may end up with fewer if candidates run out.
@@ -474,6 +517,24 @@ impl Default for WorldGenConfig {
             min_land_height_noise_wavelength_cells: 6.0,
             coast_cliff_fraction: 0.2,
             coast_cliff_wavelength_cells: 80.0,
+            // Small-island hill pass: stamp a ~200 m bump on every
+            // land component up to ~40k cells (≈ a 110-cell-radius
+            // disc at 8 m/cell, comfortably above the 90-cell mean
+            // small_island_radius scatter discs). 0.85× radius
+            // keeps the hill crown short of the beach so the coast
+            // ramp still wins at the shoreline.
+            small_island_hill_peak_m: 200.0,
+            small_island_hill_max_cells: 40_000,
+            small_island_hill_radius_frac: 0.85,
+            // Island rivers: 80 m peak threshold sits comfortably
+            // below the 200 m hill crown so seeded peaks always
+            // qualify. 5-cell minimum length (~40 m at 8 m/cell)
+            // catches the shortest plausible streams without
+            // littering single-cell trickles. 10-cell spacing
+            // keeps each island to one trunk where possible.
+            small_island_river_min_peak_m: 80.0,
+            small_island_river_min_length: 5,
+            small_island_river_peak_spacing_cells: 10,
             settlement_target_count: 60,
             settlement_min_spacing_cells: 70,
             settlement_max_elevation_m: 1200.0,

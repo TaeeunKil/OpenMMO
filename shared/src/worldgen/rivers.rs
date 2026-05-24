@@ -11,7 +11,7 @@
 //! subsequent phases (splatmap, vegetation) use to paint riverbeds and
 //! tint vegetation density.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use super::global_map::GlobalMap;
 use super::grid::{fold_x_delta, MinF32};
@@ -631,6 +631,16 @@ pub fn compute_flow(map: &GlobalMap) -> RiverMap {
     ];
 
     // --- Downstream pointer per land cell, on the pit-filled surface.
+    //
+    // Sea cells are evaluated separately from land cells: the
+    // `water_after_erosion` bias only competes between alternative
+    // *land* channels (its job is to make flats track the sim-carved
+    // meander rather than picking the first arbitrary downhill cell).
+    // Letting that bias multiply land slopes against sea slopes lets
+    // a coastal cell with a faint inland water signal beat the ocean
+    // itself — rivers then hug the coast instead of entering the sea.
+    // Sea is the ultimate sink, so any downhill sea neighbor wins
+    // over any land neighbor.
     let mut downstream: Vec<Option<u32>> = vec![None; total];
     for i in 0..total {
         if mask[i] == 0 {
@@ -639,8 +649,10 @@ pub fn compute_flow(map: &GlobalMap) -> RiverMap {
         let x = (i % res) as i32;
         let y = (i / res) as i32;
         let h = elev[i];
-        let mut best_score = 0.0f32;
-        let mut best: Option<u32> = None;
+        let mut best_sea_slope = 0.0f32;
+        let mut best_sea: Option<u32> = None;
+        let mut best_land_score = 0.0f32;
+        let mut best_land: Option<u32> = None;
         for &(dx, dy, dist) in &OFFSETS {
             let nx = (x + dx).rem_euclid(res as i32) as usize;
             let ny = y + dy;
@@ -649,8 +661,16 @@ pub fn compute_flow(map: &GlobalMap) -> RiverMap {
             }
             let ni = ny as usize * res + nx;
             let dh = h - elev[ni];
-            if dh > 0.0 {
-                let slope = dh / dist;
+            if dh <= 0.0 {
+                continue;
+            }
+            let slope = dh / dist;
+            if mask[ni] == 0 {
+                if slope > best_sea_slope {
+                    best_sea_slope = slope;
+                    best_sea = Some(ni as u32);
+                }
+            } else {
                 // Slope-only score when no sim signal is available; on
                 // flats with uniform slope this still falls back to the
                 // first downhill neighbor (matching pre-water behavior).
@@ -659,13 +679,13 @@ pub fn compute_flow(map: &GlobalMap) -> RiverMap {
                     None => 1.0,
                 };
                 let score = slope * bias;
-                if score > best_score {
-                    best_score = score;
-                    best = Some(ni as u32);
+                if score > best_land_score {
+                    best_land_score = score;
+                    best_land = Some(ni as u32);
                 }
             }
         }
-        downstream[i] = best;
+        downstream[i] = best_sea.or(best_land);
     }
 
     // --- Flow accumulation.
@@ -854,6 +874,122 @@ pub fn extract_rivers(
     naturalize_river_meanders(map, &mut rivers.rivers);
     remove_polyline_self_overlaps(&mut rivers.rivers);
     merge_overlapping_polylines(map, &mut rivers.rivers);
+}
+
+/// Append additional rivers seeded from peaks inside the small-island
+/// cell list. Reuses the existing `rivers.downstream` / `rivers.flow`
+/// (caller is expected to have called `compute_flow` since the most
+/// recent elevation edit), but bypasses the global peak-spacing and
+/// length filters in [`extract_rivers`] — tiny islands warrant short
+/// rivers from low (≈100 m) peaks, which would otherwise be either
+/// rejected outright or culled by the mainland spacing pass.
+///
+/// Polylines are appended to `rivers.rivers`. No merge / overlap
+/// pass is run against the mainland set because islands are
+/// physically isolated; no meander pass either — meander amplitude
+/// (~30 cells) exceeds typical island inland radius, so vertices the
+/// meander would push offshore get rejected and the polyline U-turns
+/// along the coast instead of running cleanly to the mouth.
+pub fn extract_small_island_rivers(
+    map: &GlobalMap,
+    rivers: &mut RiverMap,
+    island_cells: &[u32],
+    min_peak_elevation: f32,
+    min_length: usize,
+    min_peak_spacing_cells: u32,
+) {
+    if island_cells.is_empty() {
+        return;
+    }
+    let res = map.config.global_res as usize;
+    let elev = &map.elevation_m;
+    let res_i = res as i32;
+
+    let mut candidates: Vec<(u32, f32)> = Vec::new();
+    for &i_u32 in island_cells {
+        let i = i_u32 as usize;
+        let h = elev[i];
+        if h < min_peak_elevation {
+            continue;
+        }
+        let x = (i % res) as i32;
+        let y = (i / res) as i32;
+        let mut is_peak = true;
+        'outer: for dy in -1..=1i32 {
+            for dx in -1..=1i32 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let nx = (x + dx).rem_euclid(res_i) as usize;
+                let ny = y + dy;
+                if ny < 0 || ny >= res_i {
+                    continue;
+                }
+                let ni = ny as usize * res + nx;
+                if elev[ni] >= h {
+                    is_peak = false;
+                    break 'outer;
+                }
+            }
+        }
+        if is_peak {
+            candidates.push((i_u32, h));
+        }
+    }
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    let res_i64 = res as i64;
+    let spacing_sq: i64 = (min_peak_spacing_cells as i64).pow(2).max(1);
+    let mut peaks: Vec<(u32, f32)> = Vec::new();
+    for (idx, h) in candidates {
+        let px = (idx as usize % res) as i64;
+        let py = (idx as usize / res) as i64;
+        let ok = peaks.iter().all(|&(qidx, _)| {
+            let qx = (qidx as usize % res) as i64;
+            let qy = (qidx as usize / res) as i64;
+            let dx = (px - qx).abs();
+            let dx = dx.min(res_i64 - dx);
+            let dy = py - qy;
+            dx * dx + dy * dy >= spacing_sq
+        });
+        if ok {
+            peaks.push((idx, h));
+        }
+    }
+
+    // Local visited set per pass — islands are isolated from each other
+    // and from mainland rivers, so a small HashSet avoids the 16 MB
+    // zero-fill that a `vec![false; res²]` would require.
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut new_polys: Vec<Polyline> = Vec::new();
+    for (peak_idx, _) in peaks {
+        let mut points: Vec<(u32, u32)> = Vec::new();
+        let mut flow_vals: Vec<f32> = Vec::new();
+        let mut cur: Option<u32> = Some(peak_idx);
+        while let Some(c) = cur {
+            let ci = c as usize;
+            let x = (ci % res) as u32;
+            let y = (ci / res) as u32;
+            points.push((x, y));
+            flow_vals.push(rivers.flow[ci]);
+            if !visited.insert(c) {
+                break;
+            }
+            cur = rivers.downstream[ci];
+        }
+        if points.len() >= min_length {
+            new_polys.push(Polyline {
+                points,
+                flow: flow_vals,
+            });
+        }
+    }
+    if new_polys.is_empty() {
+        return;
+    }
+
+    remove_polyline_self_overlaps(&mut new_polys);
+    rivers.rivers.extend(new_polys);
 }
 
 /// Minimum arc-length (in vertices) between two revisits of the same cell

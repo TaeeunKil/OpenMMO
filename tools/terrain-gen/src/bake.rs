@@ -98,6 +98,29 @@ pub fn run(
     }
 
     let t = Instant::now();
+    let island_out = elevation::seed_small_island_hills(&mut map);
+    if !island_out.hotspots.is_empty() {
+        let saved_rivers = std::mem::take(&mut river_map.rivers);
+        river_map = rivers::compute_flow(&map);
+        river_map.rivers = saved_rivers;
+        let before = river_map.rivers.len();
+        rivers::extract_small_island_rivers(
+            &map,
+            &mut river_map,
+            &island_out.island_cells,
+            config.small_island_river_min_peak_m,
+            config.small_island_river_min_length as usize,
+            config.small_island_river_peak_spacing_cells,
+        );
+        eprintln!(
+            "  Phase 4c (islands):  {:.2}s  (+{} hotspots, +{} island rivers)",
+            t.elapsed().as_secs_f32(),
+            island_out.hotspots.len(),
+            river_map.rivers.len() - before,
+        );
+    }
+
+    let t = Instant::now();
     let fields = settlements::compute_habitability_fields(&map, &river_map);
     let mut settlements_list =
         settlements::place_settlements_with_fields(&map, &river_map, &fields);
