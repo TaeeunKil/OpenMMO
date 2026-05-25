@@ -368,10 +368,10 @@
       let cameraOffset = calculateCameraOffset()
       loopProfiler.record('cameraOffset', performance.now() - cameraOffsetStart)
 
-      // Movement runs in map editor so right-click-to-move works.
+      // Movement runs in map/housing editor so right-click-to-move works.
       const playerControlStart = performance.now()
-      if (playerControl && !$housingEditorMode) {
-        if (!$mapEditorMode) {
+      if (playerControl) {
+        if (!$mapEditorMode && !$housingEditorMode) {
           playerControl.checkInteraction()
           playerControl.updateKeyboardMovement()
         }

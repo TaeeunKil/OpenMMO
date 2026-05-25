@@ -825,8 +825,8 @@
   }
 
   function handleCanvasClickIntent(event: MouseEvent) {
-    if ($housingEditorMode) return
-    const expectedButton = $mapEditorMode ? 2 : 0
+    const editorMode = $mapEditorMode || $housingEditorMode
+    const expectedButton = editorMode ? 2 : 0
     if (event.button !== expectedButton) return
     if (!currentPlayer || currentPlayer.health <= 0) return
 
@@ -849,7 +849,7 @@
       },
     })
 
-    dispatchCanvasClickIntent(intent, $mapEditorMode, {
+    dispatchCanvasClickIntent(intent, editorMode, {
       attackInRange: (monsterId) => {
         initiateAttack(monsterId)
         isMoving = false
