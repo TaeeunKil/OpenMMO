@@ -18,6 +18,8 @@ pub const PAL_SNOW: u8 = 3; // snow_02 — alpine peaks
 pub const PAL_ROAD: u8 = 4; // gravel_road — settlement road surfaces
 pub const PAL_CLIFF: u8 = 5; // rocky_trail — exposed rock face on ≥45° slopes
 pub const PAL_RIVER_BED: u8 = 6; // ganges_river_pebbles — wet rocky river bottom
+pub const PAL_STONE_PATH: u8 = 7; // stone_pathway — paved stone path / plaza
+pub const PAL_PAVING: u8 = 8; // patterned_paving_02 — patterned paving / courtyard
 
 /// Source of truth for the global terrain palette. Each slot: `texture`
 /// (GLB under `client/public/textures/`), `tileScale` (m per repeat),
@@ -281,7 +283,7 @@ mod tests {
             .get("layers")
             .and_then(|l| l.as_array())
             .expect("layers array");
-        assert_eq!(layers.len(), PAL_RIVER_BED as usize + 1);
+        assert_eq!(layers.len(), PAL_PAVING as usize + 1);
         for layer in layers {
             assert!(layer.get("texture").and_then(|t| t.as_str()).is_some());
             assert!(layer.get("tileScale").and_then(|t| t.as_f64()).is_some());

@@ -6,6 +6,8 @@
     { "texture": "snow_02_1k",                  "tileScale": 4.0,  "minimapColor": [240, 240, 245] },
     { "texture": "gravel_road_1k",              "tileScale": 8.0,  "minimapColor": [140, 135, 125] },
     { "texture": "rocky_trail_1k",              "tileScale": 20.0, "minimapColor": [130, 110,  90] },
-    { "texture": "ganges_river_pebbles_1k",     "tileScale": 24.0, "minimapColor": [100, 160, 220] }
+    { "texture": "ganges_river_pebbles_1k",     "tileScale": 24.0, "minimapColor": [100, 160, 220] },
+    { "texture": "stone_pathway_1k",            "tileScale": 16.0, "minimapColor": [160, 155, 150] },
+    { "texture": "patterned_paving_02_1k",      "tileScale": 16.0, "minimapColor": [170, 160, 145] }
   ]
 }
