@@ -49,7 +49,6 @@
   let currentInsideHouseId: string | null = null
   let playerInsideFloor = -1
   let lastFloorOffset = 0
-  const _tmpVec = new THREE.Vector3()
   // Preallocated for per-frame room detection (avoid GC)
   const _allRooms: { house: HouseData; roomIndex: number }[] = []
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -259,13 +258,16 @@
     let effectiveFloor = -1
 
     for (const [id, result] of houses) {
-      // Expand AABB check to cover both floors
-      _tmpVec.set(playerPosition.x, groundY, playerPosition.z)
-      if (!result.aabb.containsPoint(_tmpVec)) {
-        // Also try at elevated Y in case AABB spans 2 floors
-        _tmpVec.set(playerPosition.x, playerPosition.y, playerPosition.z)
-        if (!result.aabb.containsPoint(_tmpVec)) continue
-      }
+      // XZ-only broad-phase: player.y is forced to terrainY each frame
+      // (PlayerControl), which can sit below the house's min.y when terrain
+      // dips inside the footprint. findAllRoomsAtPoint does the Y check
+      // per floor with a ±1m tolerance, so we don't need Y here.
+      if (
+        playerPosition.x < result.aabb.min.x ||
+        playerPosition.x > result.aabb.max.x ||
+        playerPosition.z < result.aabb.min.z ||
+        playerPosition.z > result.aabb.max.z
+      ) continue
 
       // Try all floor levels to find matching rooms
       _allRooms.length = 0
@@ -412,7 +414,7 @@
     // Mark-and-sweep to avoid per-frame Set allocation
     for (const [id, result] of houses) {
       if (id === currentInsideHouseId) continue
-      if (houseOccludesPlayer(result.aabb, playerPosition.x, playerPosition.y, playerPosition.z)) {
+      if (houseOccludesPlayer(result.roomAABBs, playerPosition.x, playerPosition.y, playerPosition.z)) {
         if (!occludedHouseIds.has(id)) {
           occludedHouseIds.add(id)
           applyOcclusionVisibility(result)
@@ -464,28 +466,33 @@
    * Check if a house occludes the player from the isometric SW camera.
    *
    * Camera pitch = atan(1/√2), forward in XZ = (1,0,−1)/√2.
-   * A camera ray from (px, py, pz) toward the camera hits the house volume
-   * iff there exists s ∈ [sLow, sHigh] such that the house footprint shifted
+   * A camera ray from (px, py, pz) toward the camera hits a room volume
+   * iff there exists s ∈ [sLow, sHigh] such that the room footprint shifted
    * by (s, −s) in XZ contains (px, pz).
    *
-   *   sHigh = aabb.max.y − py  (top of house vs player height)
+   *   sHigh = aabb.max.y − py  (top of room vs player height)
    *   sLow  = max(aabb.min.y − py, 0)
    *
-   * Player on higher ground → sHigh shrinks → occlusion zone shrinks.
-   * Player above house top  → sHigh ≤ 0    → no occlusion.
+   * Tests each room AABB rather than the merged house AABB so that
+   * concave shapes (L/T/U) don't falsely occlude when the player stands
+   * in the outdoor concave gap — the ray passes through the gap and
+   * misses every room.
    */
   function houseOccludesPlayer(
-    aabb: THREE.Box3,
+    roomAABBs: THREE.Box3[],
     px: number,
     py: number,
     pz: number
   ): boolean {
-    const sHigh = aabb.max.y - py
-    if (sHigh <= 0) return false
-    const sLow = Math.max(aabb.min.y - py, 0)
-    const sMin = Math.max(px - aabb.max.x, aabb.min.z - pz, sLow)
-    const sMax = Math.min(px - aabb.min.x, aabb.max.z - pz, sHigh)
-    return sMin <= sMax
+    for (const aabb of roomAABBs) {
+      const sHigh = aabb.max.y - py
+      if (sHigh <= 0) continue
+      const sLow = Math.max(aabb.min.y - py, 0)
+      const sMin = Math.max(px - aabb.max.x, aabb.min.z - pz, sLow)
+      const sMax = Math.min(px - aabb.min.x, aabb.max.z - pz, sHigh)
+      if (sMin <= sMax) return true
+    }
+    return false
   }
 
   const _noop = () => {}

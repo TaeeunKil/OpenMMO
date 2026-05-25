@@ -84,6 +84,8 @@ export interface HouseGroupResult {
     }
   >
   aabb: THREE.Box3
+  /** Per-room AABBs for concave-aware spatial tests (L/T/U shapes). */
+  roomAABBs: THREE.Box3[]
   /** JSON hash of rooms for change detection */
   roomsHash: string
   /** Number of merged meshes (for profiling). */
@@ -114,7 +116,6 @@ export type FloorEntries = {
 }
 
 const _tmpMatrix = new THREE.Matrix4()
-const _aabbVec = new THREE.Vector3()
 
 /**
  * Create geometry with baked position and tiled UVs for a single piece.
@@ -227,8 +228,16 @@ export function computeHouseAABB(house: {
   origin: { x: number; y: number; z: number }
   rooms: RoomData[]
 }): THREE.Box3 {
-  const aabb = new THREE.Box3()
-  for (const room of house.rooms) {
+  const merged = new THREE.Box3()
+  for (const box of computeRoomAABBs(house)) merged.union(box)
+  return merged
+}
+
+export function computeRoomAABBs(house: {
+  origin: { x: number; y: number; z: number }
+  rooms: RoomData[]
+}): THREE.Box3[] {
+  return house.rooms.map((room) => {
     const yBase = floorYBase(room.floorLevel, room.wallHeight)
     const minX = house.origin.x + room.localX
     const minZ = house.origin.z + room.localZ
@@ -239,18 +248,16 @@ export function computeHouseAABB(house: {
       maxY += ridgeHeight
       roofOh = ROOF_OVERHANG
     }
-    const flOh = floorOverhang(room.floorLevel)
-    const oh = Math.max(roofOh, flOh)
-    _aabbVec.set(minX - oh, house.origin.y + yBase, minZ - oh)
-    aabb.expandByPoint(_aabbVec)
-    _aabbVec.set(
-      minX + room.sizeX + oh,
-      house.origin.y + yBase + maxY,
-      minZ + room.sizeZ + oh
+    const oh = Math.max(roofOh, floorOverhang(room.floorLevel))
+    return new THREE.Box3(
+      new THREE.Vector3(minX - oh, house.origin.y + yBase, minZ - oh),
+      new THREE.Vector3(
+        minX + room.sizeX + oh,
+        house.origin.y + yBase + maxY,
+        minZ + room.sizeZ + oh
+      )
     )
-    aabb.expandByPoint(_aabbVec)
-  }
-  return aabb
+  })
 }
 
 /** Compute gabled roof dimensions from room data. */
