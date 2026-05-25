@@ -438,9 +438,7 @@ pub fn seed_small_island_hills(map: &mut GlobalMap) -> SmallIslandHillsOut {
         let n = component.len() as f32;
         let mean_x = anchor_x + sum_dx / n;
         let cx = ((mean_x.round() as i32).rem_euclid(res_i)) as f32;
-        let cy = (anchor_y + sum_dy / n)
-            .round()
-            .clamp(0.0, (res - 1) as f32);
+        let cy = (anchor_y + sum_dy / n).round().clamp(0.0, (res - 1) as f32);
         let world_x = (cx + 0.5) * mpc - origin;
         let world_y = (cy + 0.5) * mpc - origin;
         let radius_m = max_d as f32 * mpc * radius_frac;

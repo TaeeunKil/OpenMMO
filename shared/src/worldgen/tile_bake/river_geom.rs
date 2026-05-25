@@ -109,10 +109,9 @@ pub fn wide_river_cell_mask(map: &GlobalMap, river_map: &RiverMap) -> Vec<bool> 
             continue;
         };
         for (i, &(x, y)) in poly.points.iter().enumerate() {
-            let in_fan = arcs.mouth_in_sea
-                && arcs.arc_to_mouth(i) < RIVER_MOUTH_FAN_ARC_CELLS;
-            let too_wide = predicted_visible_width(poly.flow[i], inv_log_max)
-                > BRIDGE_MAX_VISIBLE_WIDTH_M;
+            let in_fan = arcs.mouth_in_sea && arcs.arc_to_mouth(i) < RIVER_MOUTH_FAN_ARC_CELLS;
+            let too_wide =
+                predicted_visible_width(poly.flow[i], inv_log_max) > BRIDGE_MAX_VISIBLE_WIDTH_M;
             if in_fan || too_wide {
                 out[(y as usize) * res + (x as usize)] = true;
             }
