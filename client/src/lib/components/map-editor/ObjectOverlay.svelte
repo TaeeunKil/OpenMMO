@@ -37,7 +37,6 @@
 
   let tool = $state<EditorTool>('height')
   let placements = $state<ObjectPlacement[]>([])
-  let catalogLength = $state(0)
   let selectedId = $state<number | null>(null)
   let previewPos = $state<{ x: number; y: number; z: number } | null>(null)
   let rotation = $state(0)
@@ -59,7 +58,11 @@
         bridgeManager.syncRegion(v.placements, catalogById)
       }
     }),
-    objectCatalog.subscribe((v) => (catalogLength = v.length)),
+    objectCatalog.subscribe((v) => {
+      // Keep catalogById in sync with whoever populated the store
+      // (ObjectBrushPanel can fetch the catalog before loadRegionObject runs).
+      catalogById = new Map(v.map((d) => [d.id, d]))
+    }),
     selectedObjectPlacementId.subscribe((v) => (selectedId = v)),
     objectPreviewPos.subscribe((v) => (previewPos = v)),
     objectRotation.subscribe((v) => (rotation = v)),
@@ -77,10 +80,9 @@
     if (rx === lastLoadedRegion.rx && rz === lastLoadedRegion.rz) return
     lastLoadedRegion = { rx, rz }
 
-    if (catalogLength === 0) {
+    if (catalogById.size === 0) {
       const cat = await objectManager.fetchCatalog()
       objectCatalog.set(cat)
-      catalogById = new Map(cat.map((d) => [d.id, d]))
     }
 
     const data = await objectManager.fetchObject(rx, rz)
@@ -132,6 +134,9 @@
       modelCache.set(objectId, model)
       lastBuildKey = ''
       rebuild()
+      // If the user is currently previewing this object, build the preview now —
+      // otherwise the cursor stays empty until the mouse moves again.
+      if (selectedType === objectId) updatePreview()
       return model
     } finally {
       loadingModels.delete(objectId)
@@ -293,7 +298,6 @@ let lastBuildKey = ''
   $effect(() => {
     void placements
     void selectedId
-    void catalogLength
     void tool
     void isEditorMode
     void currentFloor
