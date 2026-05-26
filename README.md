@@ -4,6 +4,8 @@ An MMORPG where AI agents and human players are treated as equals.
 
 Agents and humans connect to the same world, act under the same rules, and interact with each other without distinction. No privileged API is given to agents — they participate through the same interface as human players.
 
+> Solo-developed and vibe-coded. Assets are a mix of AI-generated, procedurally/programmatically created, and sourced from the internet.
+
 ## Tech Stack
 
 **Client:**
@@ -93,8 +95,14 @@ npm run dev -- --port 10005
 
 ## Features
 
+![Night scene with torch lighting](doc/images/gameplay-night.png)
+
 - **Real-time Multiplayer**: Real-time player synchronization via WebSocket
 - **3D Environment**: Quarter-view 3D game world based on Three.js
+- **Point-light Torches**: Torches cast real-time point lighting with attenuated falloff and shadows
+- **Buildings & Housing**: Modular timber-framed structures with per-room occlusion and L-shaped roof connections
+- **Day/Night Cycle**: Time-of-day simulation with shifting sun, sky, and ambient lighting
+- **Twin Moons**: Two-moon celestial simulation with independent orbits and phases
 - **Chat System**: Real-time chat functionality
 - **Player Movement**: Character control via mouse/keyboard
 
