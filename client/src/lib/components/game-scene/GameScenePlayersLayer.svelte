@@ -18,6 +18,7 @@
   import { applyTorchFlickerWorld, TORCH_BASE_DISTANCE, TORCH_BASE_DECAY, TORCH_BASE_POSITION } from '../../utils/torchFlicker'
   import { playerFloorLevel, playerInsideHouseId } from '../../stores/housingStore'
   import { housingManager } from '../../managers/housingManager'
+  import { bridgeManager } from '../../managers/bridgeManager'
   import { OFFSCREEN_Y } from '../../utils/house-geo-utils'
   import { torchLightEnabled } from '../../stores/debugStore'
   import { localTorchEquipped } from '../../stores/inventoryStore'
@@ -218,7 +219,9 @@
       {@const visible = remoteVisibility.get(player.id) ?? false}
       {@const baseY = player.floorLevel > 0
         ? remotePlayer.position.y
-        : (heightManager.getHeightAtWorldPosition(remotePlayer.position.x, remotePlayer.position.z) ?? remotePlayer.position.y)}
+        : (bridgeManager.findDeckYAt(remotePlayer.position.x, remotePlayer.position.z, null)
+            ?? heightManager.getHeightAtWorldPosition(remotePlayer.position.x, remotePlayer.position.z)
+            ?? remotePlayer.position.y)}
       <PlayerModel
         bind:this={otherPlayerModels[index]}
         position={new THREE.Vector3(

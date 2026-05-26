@@ -12,6 +12,7 @@ import { Vector3 } from 'three'
 import { remotePlayerManager } from '../managers/remotePlayerManager'
 import { monsterManager } from '../managers/monsterManager'
 import { housingManager } from '../managers/housingManager'
+import { bridgeManager } from '../managers/bridgeManager'
 import { objectManager } from '../managers/objectManager'
 import { groundItemManager } from '../managers/groundItemManager'
 import { setInventory } from '../stores/inventoryStore'
@@ -215,11 +216,16 @@ export function handleServerMessage(
       if (state.currentPlayer?.id === data.player_id) {
         break
       }
+      const deckY = bridgeManager.findDeckYAt(
+        data.position.x,
+        data.position.z,
+        null
+      )
       remotePlayerManager.setTargetPosition(
         data.player_id,
         {
           x: data.position.x,
-          y: data.position.y,
+          y: deckY ?? data.position.y,
           z: data.position.z,
         },
         data.rotation
@@ -242,9 +248,14 @@ export function handleServerMessage(
         requestCameraReset()
         break
       }
+      const tpDeckY = bridgeManager.findDeckYAt(
+        data.position.x,
+        data.position.z,
+        null
+      )
       remotePlayerManager.teleportPlayer(
         data.player_id,
-        data.position,
+        tpDeckY !== null ? { ...data.position, y: tpDeckY } : data.position,
         data.rotation
       )
       break

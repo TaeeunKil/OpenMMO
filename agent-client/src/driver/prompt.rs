@@ -8,6 +8,36 @@ use onlinerpg_shared::ServerMessage;
 use crate::orchestrator::ScheduleEntry;
 use crate::state::SharedState;
 
+/// Max XZ distance from the agent at which an external event is still
+/// forwarded to the LLM. Events farther than this are dropped to keep the
+/// prompt focused on what the NPC can plausibly perceive.
+const EVENT_DISTANCE_LIMIT: f32 = 20.0;
+
+fn within_event_range(state: &SharedState, x: f32, z: f32) -> bool {
+    let Some(self_p) = state.self_player.as_ref() else {
+        return true;
+    };
+    crate::geom::PlanarDelta::xz(self_p.position.x, self_p.position.z, x, z).dist
+        <= EVENT_DISTANCE_LIMIT
+}
+
+fn player_within_event_range(state: &SharedState, player_id: &str) -> bool {
+    if state.self_player_id.as_deref() == Some(player_id) {
+        return true;
+    }
+    let Some(p) = state.nearby_players.get(player_id) else {
+        return true;
+    };
+    within_event_range(state, p.position.x, p.position.z)
+}
+
+fn monster_within_event_range(state: &SharedState, monster_id: &str) -> bool {
+    let Some(m) = state.nearby_monsters.get(monster_id) else {
+        return true;
+    };
+    within_event_range(state, m.position.x, m.position.z)
+}
+
 /// Build a prompt string from current state and events.
 pub(super) fn build_prompt(
     state: &SharedState,
@@ -87,40 +117,74 @@ fn format_event(state: &SharedState, msg: &ServerMessage) -> Option<String> {
         )),
         ServerMessage::ChatMessage {
             player_id, message, ..
-        } => Some(format!(
-            "[Chat] {}: {message}",
-            player_name(state, player_id)
-        )),
-        ServerMessage::PlayerJoined { player } => Some(format!("[PlayerJoined] {}", player.name)),
+        } => {
+            if !player_within_event_range(state, player_id) {
+                return None;
+            }
+            Some(format!(
+                "[Chat] {}: {message}",
+                player_name(state, player_id)
+            ))
+        }
+        ServerMessage::PlayerJoined { player } => {
+            if !within_event_range(state, player.position.x, player.position.z) {
+                return None;
+            }
+            Some(format!("[PlayerJoined] {}", player.name))
+        }
         ServerMessage::PlayerLeft { player_id } => {
+            if !player_within_event_range(state, player_id) {
+                return None;
+            }
             Some(format!("[PlayerLeft] {}", player_name(state, player_id)))
         }
         ServerMessage::PlayerMoved {
             player_id,
             position,
             ..
-        } => Some(format!(
-            "[Move] {} -> ({:.1}, {:.1}, {:.1})",
-            player_name(state, player_id),
-            position.x,
-            position.y,
-            position.z
-        )),
-        ServerMessage::MonsterSpawned { monster } => Some(format!(
-            "[MonsterSpawned] {} ({})",
-            monster.id, monster.monster_type
-        )),
-        ServerMessage::MonsterDead { monster_id } => Some(format!("[MonsterDead] {monster_id}")),
+        } => {
+            if !within_event_range(state, position.x, position.z) {
+                return None;
+            }
+            Some(format!(
+                "[Move] {} -> ({:.1}, {:.1}, {:.1})",
+                player_name(state, player_id),
+                position.x,
+                position.y,
+                position.z
+            ))
+        }
+        ServerMessage::MonsterSpawned { monster } => {
+            if !within_event_range(state, monster.position.x, monster.position.z) {
+                return None;
+            }
+            Some(format!(
+                "[MonsterSpawned] {} ({})",
+                monster.id, monster.monster_type
+            ))
+        }
+        ServerMessage::MonsterDead { monster_id } => {
+            if !monster_within_event_range(state, monster_id) {
+                return None;
+            }
+            Some(format!("[MonsterDead] {monster_id}"))
+        }
         ServerMessage::PlayerAttacked {
             player_id,
             monster_id,
             hit,
             damage,
             ..
-        } => Some(format!(
-            "[Attack] {} -> {monster_id}: hit={hit} dmg={damage}",
-            player_name(state, player_id)
-        )),
+        } => {
+            let is_self = state.self_player_id.as_deref() == Some(player_id);
+            if !is_self && !monster_within_event_range(state, monster_id) {
+                return None;
+            }
+            Some(format!(
+                "[Attack] {} -> {monster_id}: hit={hit} dmg={damage}",
+                player_name(state, player_id)
+            ))
+        }
         ServerMessage::MonsterAttackedPlayer {
             monster_id,
             player_id,
@@ -128,17 +192,32 @@ fn format_event(state: &SharedState, msg: &ServerMessage) -> Option<String> {
             damage,
             current_health,
             ..
-        } => Some(format!(
-            "[MonsterAttack] {monster_id} -> {}: hit={hit} dmg={damage} hp={current_health}",
-            player_name(state, player_id)
-        )),
+        } => {
+            let is_self = state.self_player_id.as_deref() == Some(player_id);
+            if !is_self && !monster_within_event_range(state, monster_id) {
+                return None;
+            }
+            Some(format!(
+                "[MonsterAttack] {monster_id} -> {}: hit={hit} dmg={damage} hp={current_health}",
+                player_name(state, player_id)
+            ))
+        }
         ServerMessage::PlayerDead { player_id } => {
+            if !player_within_event_range(state, player_id) {
+                return None;
+            }
             Some(format!("[PlayerDead] {}", player_name(state, player_id)))
         }
-        ServerMessage::PlayerRespawned { player } => Some(format!(
-            "[Respawn] {} HP {}/{}",
-            player.name, player.health, player.max_health
-        )),
+        ServerMessage::PlayerRespawned { player } => {
+            let is_self = state.self_player_id.as_deref() == Some(&player.id);
+            if !is_self && !within_event_range(state, player.position.x, player.position.z) {
+                return None;
+            }
+            Some(format!(
+                "[Respawn] {} HP {}/{}",
+                player.name, player.health, player.max_health
+            ))
+        }
         ServerMessage::XpGained {
             xp_amount,
             total_xp,
@@ -172,10 +251,15 @@ fn format_event(state: &SharedState, msg: &ServerMessage) -> Option<String> {
             position,
             state: monster_state,
             ..
-        } => Some(format!(
-            "[MonsterMoved] {monster_id} -> ({:.1}, {:.1}, {:.1}) state={monster_state}",
-            position.x, position.y, position.z
-        )),
+        } => {
+            if !within_event_range(state, position.x, position.z) {
+                return None;
+            }
+            Some(format!(
+                "[MonsterMoved] {monster_id} -> ({:.1}, {:.1}, {:.1}) state={monster_state}",
+                position.x, position.y, position.z
+            ))
+        }
         ServerMessage::Kicked { reason, .. } => Some(format!("[Kicked] {reason}")),
         // Skip unknown/unhandled event types
         _ => None,

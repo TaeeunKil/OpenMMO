@@ -24,10 +24,15 @@ const DEFAULT_ATTACK_COOLDOWN_MS: u64 = 1500;
 /// Relative to agent-client working directory.
 const ANIMATION_DURATIONS_PATH: &str = "data/animation_durations.json";
 
-/// How often to check monster position during chase (ms).
-const CHASE_TICK_MS: u64 = 200;
+use super::movement::{MAX_STEP_DIST, MOVE_SPEED};
+
+/// How often to poll when waiting (no active step to send), in ms.
+const CHASE_IDLE_TICK_MS: u64 = 200;
 /// Maximum chase duration before giving up (seconds).
 const MAX_CHASE_SECS: f32 = 15.0;
+/// Give up chasing monsters farther than this from the agent. Prevents NPC
+/// guards from running far off their patrol to engage distant threats.
+const MAX_CHASE_DISTANCE: f32 = 20.0;
 /// How far the monster must move from our last target before we re-route.
 const REROUTE_THRESHOLD: f32 = 1.5;
 
@@ -132,6 +137,13 @@ pub(super) async fn chase_monster(
             let player = s.self_player.as_ref().unwrap();
             let to_monster = PlanarDelta::between(&player.position, &monster.position);
             let in_range = to_monster.dist <= ATTACK_RANGE;
+            if to_monster.dist > MAX_CHASE_DISTANCE {
+                info!(
+                    "Giving up chase: monster {monster_id} is {:.1}m away (>{MAX_CHASE_DISTANCE}m)",
+                    to_monster.dist
+                );
+                return ChaseResult::Lost;
+            }
 
             let monster_shift = PlanarDelta::xz(
                 last_monster_x,
@@ -157,78 +169,101 @@ pub(super) async fn chase_monster(
                 s.find_path_to(monster_pos.x, monster_pos.z, 0)
             };
             if result.waypoints.is_empty() {
-                // No path — fall back to direct move
-                let cmd = {
-                    let s = state.lock().await;
-                    compute_move_to_monster(&s, monster_id)
-                };
-                if let Some(cmd) = cmd {
-                    let mut s = state.lock().await;
-                    if let Err(e) = s.send_command(cmd).await {
-                        error!("Failed to send chase move: {e}");
-                        return ChaseResult::Error;
-                    }
-                }
+                path_waypoints.clear();
             } else {
                 path_waypoints = result.waypoints;
-                path_index = 0;
             }
+            path_index = 0;
             last_monster_x = monster_pos.x;
             last_monster_z = monster_pos.z;
         }
 
-        // Follow next waypoint
-        if path_index < path_waypoints.len() {
-            let wp = &path_waypoints[path_index];
-            let cmd = {
-                let s = state.lock().await;
-                let player = match &s.self_player {
-                    Some(p) => p,
-                    None => return ChaseResult::Lost,
+        // Step toward next waypoint, subdividing long segments so the chase
+        // walks at MOVE_SPEED. Fall back to a direct step toward the monster
+        // if A* returned no path.
+        let step_dist = if path_index < path_waypoints.len() {
+            let wp = path_waypoints[path_index].clone();
+            let mut s = state.lock().await;
+            let player = match s.self_player.as_ref() {
+                Some(p) => p,
+                None => return ChaseResult::Lost,
+            };
+            let to_wp = PlanarDelta::to_xz(&player.position, wp.x, wp.z);
+
+            if to_wp.dist < 0.1 {
+                path_index += 1;
+                0.0
+            } else {
+                let (step_x, step_z, sd) = if to_wp.dist <= MAX_STEP_DIST {
+                    path_index += 1;
+                    (wp.x, wp.z, to_wp.dist)
+                } else {
+                    let ratio = MAX_STEP_DIST / to_wp.dist;
+                    (
+                        player.position.x + to_wp.dx * ratio,
+                        player.position.z + to_wp.dz * ratio,
+                        MAX_STEP_DIST,
+                    )
                 };
-                let to_wp = PlanarDelta::to_xz(&player.position, wp.x, wp.z);
-                ClientMessage::PlayerMove {
+                let cmd = ClientMessage::PlayerMove {
                     position: onlinerpg_shared::Position {
-                        x: wp.x,
+                        x: step_x,
                         y: player.position.y,
-                        z: wp.z,
+                        z: step_z,
                     },
                     rotation: to_wp.rotation(),
                     floor_level: wp.floor as i8,
-                }
-            };
-            {
-                let mut s = state.lock().await;
+                };
                 s.self_floor_level = wp.floor;
                 if let Err(e) = s.send_command(cmd).await {
                     error!("Failed to send chase move: {e}");
                     return ChaseResult::Error;
                 }
+                sd
             }
-            path_index += 1;
-        }
+        } else {
+            let mut s = state.lock().await;
+            match compute_step_toward_monster(&s, monster_id) {
+                Some((cmd, sd)) => {
+                    if let Err(e) = s.send_command(cmd).await {
+                        error!("Failed to send chase move: {e}");
+                        return ChaseResult::Error;
+                    }
+                    sd
+                }
+                None => 0.0,
+            }
+        };
 
-        tokio::time::sleep(Duration::from_millis(CHASE_TICK_MS)).await;
+        let travel_ms = if step_dist > 0.0 {
+            ((step_dist / MOVE_SPEED) * 1000.0) as u64
+        } else {
+            CHASE_IDLE_TICK_MS
+        };
+        tokio::time::sleep(Duration::from_millis(travel_ms.max(50))).await;
     }
 }
 
-/// If the agent is too far from the target monster, return a PlayerMove
-/// command stopping just inside `ATTACK_RANGE` of the monster. Used as the
-/// fall-through when A* can't return a path (e.g. monster on un-pathable
-/// terrain) so combat can still inch the player closer.
-fn compute_move_to_monster(state: &SharedState, monster_id: &str) -> Option<ClientMessage> {
+/// Return a single MAX_STEP_DIST-limited move toward the monster, plus the
+/// step's distance for sleep timing. Used as the fall-through when A* can't
+/// return a path (e.g. monster on un-pathable terrain) so combat can still
+/// inch the player closer at walk speed.
+fn compute_step_toward_monster(
+    state: &SharedState,
+    monster_id: &str,
+) -> Option<(ClientMessage, f32)> {
     let monster = state.nearby_monsters.get(monster_id)?;
     let self_player = state.self_player.as_ref()?;
 
     let to_monster = PlanarDelta::between(&self_player.position, &monster.position);
     if to_monster.dist <= ATTACK_RANGE {
-        return None; // Already in range
+        return None;
     }
 
-    // Move to a point just inside ATTACK_RANGE from the monster
-    let move_dist = to_monster.dist - ATTACK_RANGE + 0.5;
-    let ratio = move_dist / to_monster.dist;
-    Some(ClientMessage::PlayerMove {
+    let target_dist = to_monster.dist - ATTACK_RANGE + 0.5;
+    let step_dist = target_dist.min(MAX_STEP_DIST);
+    let ratio = step_dist / to_monster.dist;
+    let cmd = ClientMessage::PlayerMove {
         position: onlinerpg_shared::Position {
             x: self_player.position.x + to_monster.dx * ratio,
             y: monster.position.y,
@@ -236,5 +271,6 @@ fn compute_move_to_monster(state: &SharedState, monster_id: &str) -> Option<Clie
         },
         rotation: to_monster.rotation(),
         floor_level: 0,
-    })
+    };
+    Some((cmd, step_dist))
 }
