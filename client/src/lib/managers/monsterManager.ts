@@ -9,6 +9,11 @@ import type { MonsterData } from '../types/Monster'
 import { getMonsterDef } from '../data/monsterDefs'
 import type { Position } from '../utils/movementUtils'
 import type { TerrainHeightManager } from './terrainHeightManager'
+import type { TerrainSplatManager } from './terrainSplatManager'
+import type { NoSpawnZone } from './zoneManager'
+import { TILE_DIM, worldToTileCoord } from './terrain-height-types'
+import { TERRAIN_TILE_SIZE } from '../components/game-scene/terrain-utils'
+import { readCell, VEGETATION_BASE_SLOT } from '../terrain/splat-encoding'
 import {
   ai_load_templates,
   ai_create_brain,
@@ -39,13 +44,26 @@ interface TickResult {
   state: MonsterState
 }
 
+// Ambient spawn placement: distance band around the player and town buffer.
+const AMBIENT_MIN_DIST = 20
+const AMBIENT_MAX_DIST = 25
+const TOWN_MARGIN = 30 // keep spawns this far outside no-spawn zones too
+const WATER_MIN_HEIGHT = 0.3 // reject sea / submerged ground below this
+const MAX_SPAWN_ATTEMPTS = 12
+
 class MonsterManager {
   monsters = new SvelteMap<string, MonsterData>()
   heightManager: TerrainHeightManager | null = null
+  splatManager: TerrainSplatManager | null = null
+  private noSpawnZones: NoSpawnZone[] = []
   private templatesLoaded = false
 
   private sampleHeight(x: number, z: number): number {
     return this.heightManager?.getHeightAtWorldPosition(x, z) ?? 0
+  }
+
+  setNoSpawnZones(zones: NoSpawnZone[]) {
+    this.noSpawnZones = zones
   }
 
   private ensureTemplatesLoaded() {
@@ -78,9 +96,6 @@ class MonsterManager {
     }
     return undefined
   }
-
-  private timeSinceLastSpawn = 0
-  private readonly SPAWN_INTERVAL = 10000 // 10 seconds
 
   spawnWithId(
     id: string,
@@ -181,23 +196,10 @@ class MonsterManager {
       ai_remove_brain(id)
     }
     this.monsters.clear()
-    this.timeSinceLastSpawn = 0
   }
 
-  update(
-    deltaTime: number,
-    playerPosition: { x: number; y: number; z: number } | null
-  ) {
-    // 1. Spawning Logic
-    if (playerPosition) {
-      this.timeSinceLastSpawn += deltaTime
-      if (this.timeSinceLastSpawn >= this.SPAWN_INTERVAL) {
-        this.timeSinceLastSpawn = 0
-        this.spawnRandomMonster(playerPosition)
-      }
-    }
-
-    // 2. FSM & Movement Logic
+  update(deltaTime: number) {
+    // FSM & Movement Logic
     const gameState = get(gameStore)
     const myPlayerId = gameState.currentPlayer?.id
     const nearbyPlayers = this.buildNearbyPlayers(gameState)
@@ -440,32 +442,74 @@ class MonsterManager {
     }
   }
 
-  private spawnRandomMonster(playerPos: { x: number; y: number; z: number }) {
-    // Random position around the player (distance 5-15)
-    const angle = Math.random() * Math.PI * 2
-    const distance = 5 + Math.random() * 10
-    const x = playerPos.x + Math.cos(angle) * distance
-    const z = playerPos.z + Math.sin(angle) * distance
+  /**
+   * Server asked us to spawn a monster near the local player. Pick a position
+   * 20–25m away on grassland, avoiding water and towns, then request it. Picks
+   * the first valid spot found; if none after a few tries, the server retries
+   * next tick.
+   */
+  tryAmbientSpawn(monsterType: string) {
+    const player = get(gameStore).currentPlayer
+    if (!player) return
+    const px = player.position.x
+    const pz = player.position.z
 
-    const y = this.sampleHeight(x, z)
+    // Don't spawn anything around a player who is standing in (or near) a town.
+    if (this.nearNoSpawnZone(px, pz)) return
 
-    // Don't spawn underwater
-    if (y < 0) return
+    for (let i = 0; i < MAX_SPAWN_ATTEMPTS; i++) {
+      const angle = Math.random() * Math.PI * 2
+      const distance =
+        AMBIENT_MIN_DIST + Math.random() * (AMBIENT_MAX_DIST - AMBIENT_MIN_DIST)
+      const x = px + Math.cos(angle) * distance
+      const z = pz + Math.sin(angle) * distance
 
-    // Request spawn from server
-    networkManager.requestSpawnMonster(
-      'scp939',
-      { x, y, z },
-      Math.random() * Math.PI * 2
-    )
+      const y = this.sampleHeight(x, z)
+      if (y < WATER_MIN_HEIGHT) continue // sea / submerged
+      if (!this.isGrassAt(x, z)) continue // road / sand / cliff / riverbed / snow
+      if (this.nearNoSpawnZone(x, z)) continue // town + margin
+
+      networkManager.requestSpawnMonster(
+        monsterType,
+        { x, y, z },
+        Math.random() * Math.PI * 2
+      )
+      return
+    }
   }
 
-  requestSpawnFromServer(
-    monsterType: string,
-    position: { x: number; y: number; z: number },
-    rotation: number
-  ) {
-    networkManager.requestSpawnMonster(monsterType, position, rotation)
+  /** Is the dominant terrain type at (x,z) the grass-supporting base ground? */
+  private isGrassAt(x: number, z: number): boolean {
+    const sm = this.splatManager
+    if (!sm) return false
+    const tileX = worldToTileCoord(x)
+    const tileZ = worldToTileCoord(z)
+    const data = sm.getSplatData(tileX, tileZ)
+    if (!data) return false
+
+    const tileMinX = tileX * TERRAIN_TILE_SIZE - TERRAIN_TILE_SIZE / 2
+    const tileMinZ = tileZ * TERRAIN_TILE_SIZE - TERRAIN_TILE_SIZE / 2
+    const cellX = Math.min(TILE_DIM - 1, Math.max(0, Math.floor(x - tileMinX)))
+    const cellZ = Math.min(TILE_DIM - 1, Math.max(0, Math.floor(z - tileMinZ)))
+    const cell = readCell(data, cellZ * TILE_DIM + cellX)
+    const dominant = cell.blend >= 128 ? cell.secondaryIdx : cell.primaryIdx
+    return dominant === VEGETATION_BASE_SLOT
+  }
+
+  /** Within TOWN_MARGIN of any no-spawn zone (towns / safe areas)? */
+  private nearNoSpawnZone(x: number, z: number): boolean {
+    const m = TOWN_MARGIN
+    for (const zone of this.noSpawnZones) {
+      if (
+        x >= zone.minX - m &&
+        x <= zone.maxX + m &&
+        z >= zone.minZ - m &&
+        z <= zone.maxZ + m
+      ) {
+        return true
+      }
+    }
+    return false
   }
 }
 

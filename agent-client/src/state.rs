@@ -393,14 +393,8 @@ impl SharedState {
                 self.nearby_monsters
                     .insert(monster.id.clone(), monster.clone());
             }
-            ServerMessage::SpawnMonsterRequest {
-                monster_type,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-            } => {
-                if let Some(pos) = self.find_valid_spawn_position(*min_x, *min_z, *max_x, *max_z) {
+            ServerMessage::SpawnMonsterRequest { monster_type } => {
+                if let Some(pos) = self.find_valid_spawn_position() {
                     let mut rng = rand::thread_rng();
                     let rotation = rng.gen_range(0.0..std::f32::consts::TAU);
                     self.pending_commands
@@ -646,29 +640,45 @@ impl SharedState {
         })
     }
 
-    /// Find a valid spawn position within the given area.
-    /// Tries random positions, rejecting blocked locations (inside houses).
-    /// Y coordinate is set to 0; the monster AI will correct via terrain height on first move.
-    fn find_valid_spawn_position(
-        &self,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> Option<Position> {
+    /// Pick a spawn position 20–25m around the bot's own player, rejecting
+    /// houses and no-spawn zones (+ margin). Y is set to 0; the monster AI
+    /// corrects to terrain height on first move. (Headless bot has no terrain
+    /// data, so it cannot check grass/water like the real client does.)
+    fn find_valid_spawn_position(&self) -> Option<Position> {
+        // Mirror the server's NO_SPAWN_MARGIN / client's TOWN_MARGIN so the bot
+        // doesn't generate spawn requests the server will reject around towns.
+        const TOWN_MARGIN: f32 = 30.0;
+
+        let center = self.self_player.as_ref()?.position.clone();
+
+        // Don't spawn around a bot that is standing in (or near) a town.
+        if self
+            .no_spawn_zones
+            .iter()
+            .any(|z| z.contains_with_margin(center.x, center.z, TOWN_MARGIN))
+        {
+            return None;
+        }
+
         let world = self.world_cache.read().unwrap();
         let mut rng = rand::thread_rng();
         for _ in 0..10 {
-            let x: f32 = rng.gen_range(min_x..max_x);
-            let z: f32 = rng.gen_range(min_z..max_z);
+            let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+            let dist = rng.gen_range(20.0..25.0);
+            let x = center.x + angle.cos() * dist;
+            let z = center.z + angle.sin() * dist;
 
             // Reject if inside a house
             if pathfinding::is_movement_blocked(world.passability_cache(), x, z, x, z, 0.0) {
                 continue;
             }
 
-            // Reject if inside a no-spawn zone
-            if self.no_spawn_zones.iter().any(|zone| zone.contains(x, z)) {
+            // Reject if inside a no-spawn zone (+ margin)
+            if self
+                .no_spawn_zones
+                .iter()
+                .any(|zone| zone.contains_with_margin(x, z, TOWN_MARGIN))
+            {
                 continue;
             }
 

@@ -10,10 +10,33 @@ pub struct WorldConfig {
     pub spawn_position: SpawnPosition,
     #[serde(rename = "maxMonstersTotal", default = "default_max_monsters_total")]
     pub max_monsters_total: u32,
+    /// Monster types that spawn dynamically around players (no fixed zones).
+    #[serde(rename = "ambientSpawns", default)]
+    pub ambient_spawns: Vec<AmbientSpawnRule>,
 }
 
 fn default_max_monsters_total() -> u32 {
     1000
+}
+
+fn default_max_distance() -> f32 {
+    60.0
+}
+
+/// A monster type that spawns dynamically near players, instead of within a
+/// hand-authored rectangle. The client picks the actual position (grassland,
+/// not water, away from towns); the server only enforces caps and validates.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AmbientSpawnRule {
+    #[serde(rename = "monsterType")]
+    pub monster_type: String,
+    /// Max alive monsters of this type each player may own at once.
+    #[serde(rename = "maxPerPlayer")]
+    pub max_per_player: u32,
+    /// Server-side sanity bound: a requested spawn must be within this many
+    /// meters of the requesting player.
+    #[serde(rename = "maxDistance", default = "default_max_distance")]
+    pub max_distance: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,29 +45,6 @@ pub struct SpawnPosition {
     pub y: f32,
     pub z: f32,
     pub rotation: f32,
-}
-
-/// Monster spawn rule loaded from per-region zone files.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MonsterSpawnRule {
-    #[serde(rename = "monsterType")]
-    pub monster_type: String,
-    #[serde(rename = "maxPerPlayer")]
-    pub max_per_player: u32,
-    #[allow(dead_code)]
-    #[serde(rename = "maxTotal", default)]
-    pub max_total: Option<u32>,
-    #[allow(dead_code)]
-    #[serde(rename = "spawnIntervalSecs")]
-    pub spawn_interval_secs: u64,
-    #[serde(rename = "minX")]
-    pub min_x: f32,
-    #[serde(rename = "minZ")]
-    pub min_z: f32,
-    #[serde(rename = "maxX")]
-    pub max_x: f32,
-    #[serde(rename = "maxZ")]
-    pub max_z: f32,
 }
 
 static WORLD_CONFIG: LazyLock<WorldConfig> = LazyLock::new(|| {
@@ -67,18 +67,17 @@ pub fn log_world_config() {
     );
 }
 
-/// Load spawn rules and no-spawn zones from all per-region zone files.
-pub async fn load_spawn_config_from_regions(
-    terrain_io: &TerrainIO,
-) -> (Vec<MonsterSpawnRule>, Vec<NoSpawnZone>) {
-    let mut spawn_rules = Vec::new();
+/// Load no-spawn zones (towns, safe areas) from all per-region zone files.
+/// Monster spawn areas are no longer authored per-region — see `ambientSpawns`
+/// in world.json.
+pub async fn load_no_spawn_zones_from_regions(terrain_io: &TerrainIO) -> Vec<NoSpawnZone> {
     let mut no_spawn_zones = Vec::new();
 
     let regions = match terrain_io.list_zone_regions().await {
         Ok(r) => r,
         Err(e) => {
             warn!("Failed to list zone regions: {e}");
-            return (spawn_rules, no_spawn_zones);
+            return no_spawn_zones;
         }
     };
 
@@ -91,13 +90,6 @@ pub async fn load_spawn_config_from_regions(
             }
         };
 
-        if let Some(spawns) = json.get("monsterSpawns") {
-            match serde_json::from_value::<Vec<MonsterSpawnRule>>(spawns.clone()) {
-                Ok(rules) => spawn_rules.extend(rules),
-                Err(e) => warn!("Bad monsterSpawns in r{rx:+03}_{rz:+03}: {e}"),
-            }
-        }
-
         if let Some(zones) = json.get("noSpawnZones") {
             match serde_json::from_value::<Vec<NoSpawnZone>>(zones.clone()) {
                 Ok(parsed) => no_spawn_zones.extend(parsed),
@@ -107,9 +99,8 @@ pub async fn load_spawn_config_from_regions(
     }
 
     info!(
-        "Loaded {} spawn rules, {} no-spawn zones from region files",
-        spawn_rules.len(),
+        "Loaded {} no-spawn zones from region files",
         no_spawn_zones.len()
     );
-    (spawn_rules, no_spawn_zones)
+    no_spawn_zones
 }

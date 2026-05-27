@@ -354,19 +354,14 @@ export function handleServerMessage(
     }
 
     case 'SpawnMonsterRequest': {
-      // Server asks us to spawn a monster within the given rectangular area.
-      const x = data.min_x + Math.random() * (data.max_x - data.min_x)
-      const z = data.min_z + Math.random() * (data.max_z - data.min_z)
-      const rotation = Math.random() * Math.PI * 2
-      monsterManager.requestSpawnFromServer(
-        data.monster_type,
-        { x, y: 0, z },
-        rotation
-      )
+      // Server asks us to spawn a monster near the local player; pick a valid
+      // grassland spot away from water/towns and request it.
+      monsterManager.tryAmbientSpawn(data.monster_type)
       break
     }
 
     case 'NoSpawnZones':
+      monsterManager.setNoSpawnZones(data.zones ?? [])
       break
 
     case 'MonsterAssigned': {

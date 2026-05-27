@@ -5,5 +5,12 @@
     "z": 4741.6,
     "rotation": 158.8
   },
-  "maxMonstersTotal": 1000
+  "maxMonstersTotal": 1000,
+  "ambientSpawns": [
+    {
+      "monsterType": "scp939",
+      "maxPerPlayer": 8,
+      "maxDistance": 60
+    }
+  ]
 }

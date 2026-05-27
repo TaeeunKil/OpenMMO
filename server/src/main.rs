@@ -92,22 +92,21 @@ async fn main() {
     )));
     let terrain_io = Arc::new(TerrainIO::new(std::path::PathBuf::from(&args.terrain_dir)));
 
-    // Load spawn rules and no-spawn zones from per-region zone files
-    let (spawn_rules, no_spawn_zones) =
-        world_config::load_spawn_config_from_regions(&terrain_io).await;
+    // Load no-spawn zones (towns) from per-region zone files. Monster spawn
+    // areas come from world.json `ambientSpawns`, not per-region rectangles.
+    let no_spawn_zones = world_config::load_no_spawn_zones_from_regions(&terrain_io).await;
 
     let game_state = Arc::new(GameState::new(
         monster_defs,
         item_defs,
         initial_game_time,
         Arc::clone(&housing_io),
-        spawn_rules,
         no_spawn_zones,
     ));
     // Monster spawn tick task
     let game_state_for_spawns = Arc::clone(&game_state);
     tokio::spawn(async move {
-        // Use a 10-second base interval; tick_monster_spawns checks per-rule timing
+        // Every 10s, top up each player's ambient monsters toward their caps.
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             interval.tick().await;

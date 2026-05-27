@@ -175,15 +175,11 @@ pub enum ServerMessage {
     MonsterAssigned {
         monster: Monster,
     },
-    /// Server requests this client to spawn a monster within the given area.
-    /// Client should find a valid position (avoiding water, interiors, cliffs)
-    /// and reply with RequestSpawnMonster.
+    /// Server asks this client to spawn a monster somewhere near the player.
+    /// The client picks a valid position (grassland, not water, away from towns)
+    /// around its own location and replies with RequestSpawnMonster.
     SpawnMonsterRequest {
         monster_type: String,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
     },
     MonsterMoved {
         monster_id: String,

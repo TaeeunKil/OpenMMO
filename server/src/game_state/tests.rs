@@ -18,7 +18,6 @@ fn make_test_game_state(test_name: &str) -> GameState {
         GameState::default_start_datetime(),
         housing_io,
         vec![],
-        vec![],
     )
 }
 

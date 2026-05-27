@@ -26,6 +26,15 @@ impl NoSpawnZone {
     pub fn contains(&self, x: f32, z: f32) -> bool {
         x >= self.min_x && x <= self.max_x && z >= self.min_z && z <= self.max_z
     }
+
+    /// Like `contains`, but with the rectangle expanded by `margin` on all
+    /// sides — used to keep spawns clear of the area *around* a town too.
+    pub fn contains_with_margin(&self, x: f32, z: f32, margin: f32) -> bool {
+        x >= self.min_x - margin
+            && x <= self.max_x + margin
+            && z >= self.min_z - margin
+            && z <= self.max_z + margin
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

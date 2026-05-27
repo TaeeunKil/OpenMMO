@@ -541,10 +541,13 @@ async fn handle_client_message(
             rotation,
         } => {
             if let Some(id) = &state.player_id {
-                // Validate position is within allowed spawn area
-                if !game_state.validate_spawn_position(&monster_type, &position) {
+                // Validate the client-picked position (no-spawn zones + range)
+                if !game_state
+                    .validate_spawn_position(id, &monster_type, &position)
+                    .await
+                {
                     warn!(
-                        "Spawn request rejected: position ({:.1}, {:.1}) outside allowed area for {}",
+                        "Spawn request rejected: position ({:.1}, {:.1}) invalid for {}",
                         position.x, position.z, monster_type
                     );
                 } else if let Some(monster) = game_state

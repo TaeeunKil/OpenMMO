@@ -1,12 +1,16 @@
 use crate::types::{MonsterState, Position, ServerMessage};
 use tracing::{info, warn};
 
+/// Keep spawns this many meters clear of every no-spawn zone (towns), so the
+/// area *around* a town stays empty too. Mirrors the client's TOWN_MARGIN.
+const NO_SPAWN_MARGIN: f32 = 30.0;
+
 impl super::GameState {
-    fn find_spawn_rule(
-        &self,
+    fn find_ambient_rule(
         monster_type: &str,
-    ) -> Option<&crate::world_config::MonsterSpawnRule> {
-        self.spawn_rules
+    ) -> Option<&'static crate::world_config::AmbientSpawnRule> {
+        crate::world_config::world_config()
+            .ambient_spawns
             .iter()
             .find(|r| r.monster_type == monster_type)
     }
@@ -20,9 +24,8 @@ impl super::GameState {
         owner_id: Option<String>,
     ) -> Option<crate::types::Monster> {
         let max_total = crate::world_config::world_config().max_monsters_total as usize;
-        let max_per_player = self
-            .find_spawn_rule(&monster_type)
-            .map(|r| r.max_per_player as usize);
+        let max_per_player =
+            Self::find_ambient_rule(&monster_type).map(|r| r.max_per_player as usize);
 
         // Read lock: single-pass check of both global and per-player limits
         {
@@ -158,11 +161,12 @@ impl super::GameState {
         }
     }
 
-    /// Server-driven monster spawn tick. For each player, checks if they need
-    /// more monsters per spawn rules and sends SpawnMonsterRequest so the client
-    /// can pick a valid position (avoiding water, interiors, cliffs).
+    /// Server-driven monster spawn tick. For each ambient spawn type and each
+    /// player below their cap, sends a SpawnMonsterRequest so the client can
+    /// pick a valid position near itself (grassland, not water, away from towns).
     pub async fn tick_monster_spawns(&self) {
-        if self.spawn_rules.is_empty() {
+        let ambient_spawns = &crate::world_config::world_config().ambient_spawns;
+        if ambient_spawns.is_empty() {
             return;
         }
 
@@ -196,7 +200,7 @@ impl super::GameState {
 
         let mut requested_this_tick = 0usize;
 
-        for rule in &self.spawn_rules {
+        for rule in ambient_spawns {
             for player_id in &player_ids {
                 if total_alive + requested_this_tick >= max_total {
                     return;
@@ -211,15 +215,11 @@ impl super::GameState {
                     continue;
                 }
 
-                // Ask the client to find a valid position and spawn
+                // Ask the client to find a valid position near itself and spawn
                 self.send_direct_message(
                     player_id,
                     ServerMessage::SpawnMonsterRequest {
                         monster_type: rule.monster_type.clone(),
-                        min_x: rule.min_x,
-                        min_z: rule.min_z,
-                        max_x: rule.max_x,
-                        max_z: rule.max_z,
                     },
                 )
                 .await;
@@ -229,31 +229,39 @@ impl super::GameState {
         }
     }
 
-    /// Validate that a spawn position is within the spawn zone rectangle
-    /// and not inside any no-spawn zone.
-    pub fn validate_spawn_position(&self, monster_type: &str, position: &Position) -> bool {
-        let rule = match self.find_spawn_rule(monster_type) {
+    /// Validate a client-requested spawn: it must be a configured ambient type,
+    /// outside every no-spawn zone, and within range of the requesting player.
+    /// Terrain checks (grassland, water) are the client's responsibility — the
+    /// server has no terrain data.
+    pub async fn validate_spawn_position(
+        &self,
+        player_id: &str,
+        monster_type: &str,
+        position: &Position,
+    ) -> bool {
+        let rule = match Self::find_ambient_rule(monster_type) {
             Some(r) => r,
             None => return false,
         };
 
-        // Check position is within the spawn zone rectangle (with small tolerance)
-        let tol = 1.0;
-        if position.x < rule.min_x - tol
-            || position.x > rule.max_x + tol
-            || position.z < rule.min_z - tol
-            || position.z > rule.max_z + tol
-        {
-            return false;
-        }
-
-        // Reject if inside any no-spawn zone
+        // Reject if inside any no-spawn zone (towns, safe areas) + margin
         for zone in &self.no_spawn_zones {
-            if zone.contains(position.x, position.z) {
+            if zone.contains_with_margin(position.x, position.z, NO_SPAWN_MARGIN) {
                 return false;
             }
         }
 
-        true
+        // Must be reasonably close to the requesting player (anti-cheat sanity)
+        let player_pos = {
+            let players = self.players.read().await;
+            match players.get(player_id) {
+                Some(p) => p.position.clone(),
+                None => return false,
+            }
+        };
+        let dx = position.x - player_pos.x;
+        let dz = position.z - player_pos.z;
+        let max = rule.max_distance + 10.0; // tolerance
+        dx * dx + dz * dz <= max * max
     }
 }

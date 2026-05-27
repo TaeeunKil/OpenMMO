@@ -126,6 +126,7 @@
   const terrainTreeDataManager = new TerrainTreeDataManager(terrainHeightManager)
   const riverFieldManager = new RiverFieldManager()
   monsterManager.heightManager = terrainHeightManager
+  monsterManager.splatManager = terrainSplatManager
   editorHeightManager.set(terrainHeightManager)
   editorSplatManager.set(terrainSplatManager)
   editorZoneManager.set(new ZoneManager())
@@ -445,7 +446,7 @@
       // Update monster spawning logic
       const monsterLogicStart = performance.now()
       if (currentPlayer) {
-        monsterManager.update(deltaTime, currentPlayer.position)
+        monsterManager.update(deltaTime)
         playerDebugInfo.set({
           position: {
             x: currentPlayer.position.x,

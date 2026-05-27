@@ -2,7 +2,6 @@ use crate::housing::HousingIO;
 use crate::item_defs::ItemDefs;
 use crate::monster_defs::MonsterDefs;
 use crate::types::{CharacterAttributes, Player, PlayerId, ServerMessage};
-use crate::world_config::MonsterSpawnRule;
 use bytes::Bytes;
 use onlinerpg_shared::housing::{RoomData, WallDirection, WallVariant};
 use onlinerpg_shared::inventory::PlayerInventory;
@@ -76,8 +75,6 @@ pub struct GameState {
     dirty_inventories: Arc<RwLock<HashSet<PlayerId>>>,
     /// In-memory set of currently open doors.
     open_doors: Arc<RwLock<HashSet<DoorKey>>>,
-    /// Monster spawn rules from region zone files.
-    spawn_rules: Vec<MonsterSpawnRule>,
     /// No-spawn zones (towns, safe areas) from region zone files.
     no_spawn_zones: Vec<NoSpawnZone>,
     /// Player inventories (bag + equipment), keyed by player_id.
@@ -94,7 +91,6 @@ impl GameState {
         item_defs: ItemDefs,
         initial_datetime: crate::types::GameDateTime,
         housing_io: Arc<HousingIO>,
-        spawn_rules: Vec<MonsterSpawnRule>,
         no_spawn_zones: Vec<NoSpawnZone>,
     ) -> Self {
         let (broadcast_tx, _) = broadcast::channel(1000);
@@ -114,7 +110,6 @@ impl GameState {
             dirty_players: Arc::new(RwLock::new(HashSet::new())),
             dirty_inventories: Arc::new(RwLock::new(HashSet::new())),
             open_doors: Arc::new(RwLock::new(HashSet::new())),
-            spawn_rules,
             no_spawn_zones,
             inventories: Arc::new(RwLock::new(HashMap::new())),
             ground_items: Arc::new(RwLock::new(HashMap::new())),
