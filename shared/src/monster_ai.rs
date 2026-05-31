@@ -23,7 +23,6 @@ pub struct AiTemplate {
     pub max_move_dist: f32,
     pub attack_range: f32,
     pub chase_range: f32,
-    pub attack_cooldown_ms: f32,
     pub leash_range: f32,
     pub hit_stagger_ms: f32,
     pub flee_health_ratio: f32,
@@ -44,7 +43,6 @@ impl Default for AiTemplate {
             max_move_dist: 10.0,
             attack_range: 2.0,
             chase_range: 25.0,
-            attack_cooldown_ms: 1500.0,
             leash_range: 50.0,
             hit_stagger_ms: 800.0,
             flee_health_ratio: 0.3,
@@ -197,6 +195,7 @@ pub struct MonsterBrain {
     target_player_id: Option<String>,
     walk_speed: f32,
     run_speed: f32,
+    attack_cooldown_ms: f32,
     move_speed: f32,
     target_position: Option<Position>,
     waypoints: Vec<PathWaypoint>,
@@ -217,6 +216,7 @@ impl MonsterBrain {
         max_health: u32,
         walk_speed: f32,
         run_speed: f32,
+        attack_cooldown_ms: f32,
         template: &AiTemplate,
     ) -> Self {
         Self {
@@ -231,6 +231,7 @@ impl MonsterBrain {
             target_player_id: None,
             walk_speed,
             run_speed,
+            attack_cooldown_ms,
             move_speed: walk_speed,
             target_position: None,
             waypoints: Vec::new(),
@@ -351,10 +352,8 @@ impl MonsterBrain {
             self.state_timer_ms = 0.0;
             commands.push(self.make_move_cmd());
         } else {
-            // Miss: go straight to attack (no stagger)
-            self.state = AiState::Attack;
-            self.state_timer_ms = 0.0;
-            commands.push(self.make_move_cmd());
+            // Miss: go straight to attack (no stagger).
+            self.transition_to_attack(&mut commands);
         }
         commands
     }
@@ -420,9 +419,8 @@ impl MonsterBrain {
             {
                 self.transition_to_flee(commands, path_provider);
             } else {
-                self.state = AiState::Attack;
-                self.state_timer_ms = 0.0;
-                commands.push(self.make_move_cmd());
+                // Recovered from a hit-stagger: be ready to swing immediately.
+                self.transition_to_attack(commands);
             }
         }
     }
@@ -480,7 +478,7 @@ impl MonsterBrain {
         if dist_sq <= attack_range_sq {
             self.rotation = dx.atan2(dz);
 
-            if self.state_timer_ms >= template.attack_cooldown_ms {
+            if self.state_timer_ms >= self.attack_cooldown_ms {
                 self.state_timer_ms = 0.0;
                 commands.push(self.make_move_cmd());
                 commands.push(AiCommand::Attack {
@@ -583,6 +581,15 @@ impl MonsterBrain {
         self.target_position = None;
         self.waypoints.clear();
         self.current_waypoint_idx = 0;
+        commands.push(self.make_move_cmd());
+    }
+
+    /// Enter the attack state primed to swing on the next in-range tick. Seeding
+    /// the timer with the full cooldown means the first hit lands immediately
+    /// instead of waiting out a windup that a follow-up stagger would only reset.
+    fn transition_to_attack(&mut self, commands: &mut Vec<AiCommand>) {
+        self.state = AiState::Attack;
+        self.state_timer_ms = self.attack_cooldown_ms;
         commands.push(self.make_move_cmd());
     }
 
@@ -810,6 +817,7 @@ mod tests {
             10,
             1.0,
             8.0,
+            1500.0,
             template,
         )
     }
@@ -879,7 +887,6 @@ mod tests {
         "maxMoveDist": 10.0,
         "attackRange": 2.0,
         "chaseRange": 25.0,
-        "attackCooldownMs": 1500.0,
         "leashRange": 50.0,
         "hitStaggerMs": 800.0,
         "fleeHealthRatio": 0.3,
@@ -925,5 +932,38 @@ mod tests {
             .commands
             .iter()
             .any(|c| matches!(c, AiCommand::Move { .. })));
+    }
+
+    #[test]
+    fn attack_command_uses_monster_cooldown() {
+        let t = AiTemplate::default();
+        let mut brain = make_brain(&t);
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        brain.state = AiState::Attack;
+        brain.target_player_id = Some("p1".into());
+        brain.attack_cooldown_ms = 1800.0;
+
+        let players = vec![NearbyPlayer {
+            id: "p1".into(),
+            position: Position {
+                x: 11.0,
+                y: 0.0,
+                z: 10.0,
+            },
+            health: 10,
+        }];
+
+        let before_cooldown = brain.tick(1700.0, &players, &t, &DirectPath, &mut rng);
+        assert!(!before_cooldown
+            .commands
+            .iter()
+            .any(|c| matches!(c, AiCommand::Attack { .. })));
+
+        let after_cooldown = brain.tick(100.0, &players, &t, &DirectPath, &mut rng);
+        assert!(after_cooldown
+            .commands
+            .iter()
+            .any(|c| matches!(c, AiCommand::Attack { .. })));
     }
 }

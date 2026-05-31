@@ -9,9 +9,11 @@ export interface MonsterData {
   targetPlayerId?: string // Who the monster is attacking
   moveSpeed: number
   stateTimer: number
+  attackCounter?: number
+  lastAttackStartedAt?: number
   impactDelay?: number // Delay until hit state starts
   isLastHitSuccess?: boolean // Whether the last attack was a hit
-  isDeadPending?: boolean // Death packet received, waiting for impact delay
+  isDeadPending?: boolean // Death packet received, waiting for impact/hit visuals
   droppedWeaponItemDefId?: string
   lastDamageInfo?: {
     damage: number
@@ -19,6 +21,9 @@ export interface MonsterData {
     trigger: number
   }
   pendingDamage?: number // Temporary storage for impact sync
+  // Damage number scheduled from the attack start. Captures damage/hit at
+  // schedule time to survive a follow-up attack overwriting pendingDamage.
+  pendingDamageText?: { delay: number; damage: number; hit: boolean }
   health: number
   maxHealth: number
   spawnPosition?: { x: number; y: number; z: number }

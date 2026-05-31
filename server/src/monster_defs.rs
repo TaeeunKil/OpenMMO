@@ -24,6 +24,10 @@ pub struct MonsterDefinition {
     pub chase_range: f32,
     #[serde(rename = "attackCooldown")]
     pub attack_cooldown: u32,
+    #[serde(rename = "attackImpactDelay", default)]
+    pub attack_impact_delay: u32,
+    #[serde(rename = "attackDamageTextDelay", default)]
+    pub attack_damage_text_delay: u32,
     #[serde(rename = "damageRoll")]
     pub damage_roll: String,
     #[serde(default)]
@@ -44,6 +48,8 @@ pub struct MonsterDefinition {
     pub anim_run: String,
     #[serde(rename = "animAttack")]
     pub anim_attack: String,
+    #[serde(rename = "animAttackIdle", default)]
+    pub anim_attack_idle: Option<String>,
     #[serde(rename = "animHit")]
     pub anim_hit: String,
     #[serde(rename = "animDie")]

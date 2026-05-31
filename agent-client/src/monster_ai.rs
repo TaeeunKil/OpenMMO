@@ -21,6 +21,7 @@ pub struct MonsterAiManager {
 pub struct MonsterMovement {
     pub walk_speed: f32,
     pub run_speed: f32,
+    pub attack_cooldown_ms: f32,
 }
 
 impl Default for MonsterMovement {
@@ -28,6 +29,7 @@ impl Default for MonsterMovement {
         Self {
             walk_speed: 1.0,
             run_speed: 8.0,
+            attack_cooldown_ms: 1500.0,
         }
     }
 }
@@ -59,6 +61,8 @@ impl MonsterAiManager {
             walk_speed: f32,
             #[serde(rename = "runSpeed", default = "default_run_speed")]
             run_speed: f32,
+            #[serde(rename = "attackCooldown", default = "default_attack_cooldown_ms")]
+            attack_cooldown_ms: f32,
         }
         fn default_template() -> String {
             "default".to_string()
@@ -68,6 +72,9 @@ impl MonsterAiManager {
         }
         fn default_run_speed() -> f32 {
             MonsterMovement::default().run_speed
+        }
+        fn default_attack_cooldown_ms() -> f32 {
+            MonsterMovement::default().attack_cooldown_ms
         }
 
         let raw: HashMap<String, RawMonster> =
@@ -81,6 +88,7 @@ impl MonsterAiManager {
                 MonsterMovement {
                     walk_speed: r.walk_speed,
                     run_speed: r.run_speed,
+                    attack_cooldown_ms: r.attack_cooldown_ms,
                 },
             );
         }
@@ -129,6 +137,7 @@ impl MonsterAiManager {
             monster.max_health,
             movement.walk_speed,
             movement.run_speed,
+            movement.attack_cooldown_ms,
             template,
         );
         self.brains.insert(monster.id.clone(), brain);

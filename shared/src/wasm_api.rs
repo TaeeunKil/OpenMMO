@@ -270,6 +270,7 @@ pub fn ai_create_brain(val: JsValue) -> Result<(), JsError> {
         max_health: u32,
         walk_speed: f32,
         run_speed: f32,
+        attack_cooldown: f32,
         template_name: String,
     }
 
@@ -287,6 +288,7 @@ pub fn ai_create_brain(val: JsValue) -> Result<(), JsError> {
         args.max_health,
         args.walk_speed,
         args.run_speed,
+        args.attack_cooldown,
         &template,
     );
 

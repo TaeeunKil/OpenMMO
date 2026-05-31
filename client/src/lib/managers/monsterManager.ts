@@ -15,6 +15,12 @@ import { TILE_DIM, worldToTileCoord } from './terrain-height-types'
 import { TERRAIN_TILE_SIZE } from '../components/game-scene/terrain-utils'
 import { readCell, VEGETATION_BASE_SLOT } from '../terrain/splat-encoding'
 import {
+  PLAYER_ATTACK_DAMAGE_TEXT_DELAY_MS,
+  DEFAULT_MONSTER_ATTACK_IMPACT_DELAY_MS,
+  DEFAULT_MONSTER_ATTACK_COOLDOWN_MS,
+  PLAYER_ATTACK_IMPACT_DELAY_MS,
+} from '../data/combatTiming'
+import {
   ai_load_templates,
   ai_create_brain,
   ai_remove_brain,
@@ -120,6 +126,7 @@ class MonsterManager {
       ownerId,
       moveSpeed: def?.walkSpeed ?? 1,
       stateTimer: 0,
+      attackCounter: 0,
       health: hp,
       maxHealth: maxHp,
       spawnPosition: { ...position },
@@ -142,6 +149,8 @@ class MonsterManager {
         maxHealth: maxHp,
         walkSpeed: def?.walkSpeed ?? 1,
         runSpeed: def?.runSpeed ?? 8,
+        attackCooldown:
+          def?.attackCooldown ?? DEFAULT_MONSTER_ATTACK_COOLDOWN_MS,
         templateName,
       })
     }
@@ -156,13 +165,26 @@ class MonsterManager {
     this.monsters.delete(id)
   }
 
+  // Whether a killing blow should play the hit reaction before the death clip.
+  // Defaults to true; monsters with an awkward hit clip opt out via the def.
+  private deathPlaysHitFor(monster: MonsterData): boolean {
+    return getMonsterDef(monster.type)?.deathPlaysHit ?? true
+  }
+
   handleMonsterDead(id: string, droppedWeaponItemDefId?: string | null) {
     const monster = this.monsters.get(id)
     if (monster) {
       ai_handle_death(id)
       monster.droppedWeaponItemDefId = droppedWeaponItemDefId ?? undefined
+      const deathPlaysHit = this.deathPlaysHitFor(monster)
       // If we are waiting for an impact, delay the visual death
       if (monster.impactDelay && monster.impactDelay > 0) {
+        monster.isDeadPending = true
+      } else if (
+        monster.state === 'hit' &&
+        monster.isLastHitSuccess &&
+        deathPlaysHit
+      ) {
         monster.isDeadPending = true
       } else {
         // Otherwise die immediately
@@ -171,6 +193,16 @@ class MonsterManager {
       }
       this.monsters.set(id, { ...monster })
     }
+  }
+
+  handleMonsterHitFinished(id: string) {
+    const monster = this.monsters.get(id)
+    if (!monster?.isDeadPending || monster.state !== 'hit') return
+
+    monster.state = 'dead'
+    monster.stateTimer = 0
+    monster.isDeadPending = false
+    this.monsters.set(id, { ...monster })
   }
 
   handleMonsterAttacked(
@@ -182,15 +214,63 @@ class MonsterManager {
     const monster = this.monsters.get(monsterId)
     if (!monster || monster.state === 'dead') return
 
-    // Set impact delay (e.g., 400ms for player's slash to land)
-    monster.impactDelay = 540
+    // Set impact delay for the shared player slash animation to land.
+    monster.impactDelay = PLAYER_ATTACK_IMPACT_DELAY_MS
     monster.targetPlayerId = playerId
     monster.isLastHitSuccess = hit
     // Temporarily store damage to show at impact
     monster.pendingDamage = damage
+    if (playerId === get(gameStore).currentPlayer?.id) {
+      monster.pendingDamageText = {
+        delay: PLAYER_ATTACK_DAMAGE_TEXT_DELAY_MS,
+        damage,
+        hit,
+      }
+    }
 
     // Trigger reactivity
     this.monsters.set(monsterId, { ...monster })
+  }
+
+  handleMonsterAttackStarted(monsterId: string, dedupeWindowMs = 0) {
+    const monster = this.monsters.get(monsterId)
+    if (!monster || monster.state === 'dead') return
+
+    const now = globalThis.performance?.now() ?? Date.now()
+    if (
+      dedupeWindowMs > 0 &&
+      monster.lastAttackStartedAt !== undefined &&
+      now - monster.lastAttackStartedAt < dedupeWindowMs
+    ) {
+      return
+    }
+
+    monster.state = 'attack'
+    monster.attackCounter = (monster.attackCounter ?? 0) + 1
+    monster.lastAttackStartedAt = now
+    this.monsters.set(monsterId, { ...monster })
+  }
+
+  getMonsterAttackDamageTextDelayMs(monsterId: string) {
+    const monster = this.monsters.get(monsterId)
+    if (!monster) return DEFAULT_MONSTER_ATTACK_IMPACT_DELAY_MS
+
+    const def = getMonsterDef(monster.type)
+    return (
+      def?.attackDamageTextDelay ??
+      def?.attackImpactDelay ??
+      DEFAULT_MONSTER_ATTACK_IMPACT_DELAY_MS
+    )
+  }
+
+  // Bump the floating damage number above a monster's head. The trigger counter
+  // is what DamageText watches to spawn a new text item.
+  private emitDamageText(monster: MonsterData, damage: number, hit: boolean) {
+    monster.lastDamageInfo = {
+      damage,
+      hit,
+      trigger: (monster.lastDamageInfo?.trigger || 0) + 1,
+    }
   }
 
   reset() {
@@ -220,6 +300,7 @@ class MonsterManager {
       }
 
       let impactJustExpired = false
+      let damageTextFired = false
 
       // Impact Delay Handling (Global for all clients to keep visuals synced)
       if (monster.impactDelay !== undefined && monster.impactDelay > 0) {
@@ -228,20 +309,17 @@ class MonsterManager {
           monster.impactDelay = 0
           impactJustExpired = true
 
-          // Trigger damage display only for local player's attacks
-          if (monster.targetPlayerId === myPlayerId) {
-            monster.lastDamageInfo = {
-              damage: monster.pendingDamage || 0,
-              hit: !!monster.isLastHitSuccess,
-              trigger: (monster.lastDamageInfo?.trigger || 0) + 1,
-            }
-          }
-
           if (monster.isDeadPending) {
-            // Death impact!
-            monster.state = 'dead'
+            // Fatal impact: optionally play hit first, then transition to death
+            // when the hit clip reports completion. Monsters with an awkward hit
+            // clip (deathPlaysHit=false) go straight to the death clip.
+            const leadWithHit =
+              monster.isLastHitSuccess && this.deathPlaysHitFor(monster)
+            monster.state = leadWithHit ? 'hit' : 'dead'
             monster.stateTimer = 0
-            monster.isDeadPending = false
+            if (!leadWithHit) {
+              monster.isDeadPending = false
+            }
           } else if (monster.ownerId === myPlayerId) {
             const hitCommands: AiCommand[] =
               ai_handle_hit(
@@ -260,6 +338,17 @@ class MonsterManager {
             monster.state = 'attack'
             monster.stateTimer = 0
           }
+        }
+      }
+
+      // Release the damage number once its attack-start delay has elapsed.
+      if (monster.pendingDamageText) {
+        monster.pendingDamageText.delay -= deltaTime
+        if (monster.pendingDamageText.delay <= 0) {
+          const { damage, hit } = monster.pendingDamageText
+          monster.pendingDamageText = undefined
+          this.emitDamageText(monster, damage, hit)
+          damageTextFired = true
         }
       }
 
@@ -314,7 +403,7 @@ class MonsterManager {
         ) {
           this.moveTowards(monster, monster.targetPosition, deltaTime)
           this.monsters.set(monster.id, { ...monster })
-        } else if (impactJustExpired) {
+        } else if (impactJustExpired || damageTextFired) {
           this.monsters.set(monster.id, { ...monster })
         }
       }
@@ -373,14 +462,25 @@ class MonsterManager {
         if (cmd.target_position) {
           monster.targetPosition = cmd.target_position
         }
+        if (cmd.position) {
+          monster.position = cmd.position
+        }
+        if (cmd.rotation !== undefined) {
+          monster.rotation = cmd.rotation
+        }
+        if (cmd.state) {
+          monster.state = cmd.state
+          this.updateMoveSpeedFromState(monster)
+        }
         networkManager.sendMonsterMove(
           cmd.monster_id,
-          monster.position,
-          monster.rotation,
-          monster.state,
+          cmd.position ?? monster.position,
+          cmd.rotation ?? monster.rotation,
+          cmd.state ?? monster.state,
           cmd.target_position ?? monster.position
         )
       } else if (cmd.type === 'Attack' && cmd.target_player_id) {
+        this.handleMonsterAttackStarted(cmd.monster_id)
         networkManager.sendMonsterAttack(cmd.monster_id, cmd.target_player_id)
       }
     }
@@ -400,10 +500,16 @@ class MonsterManager {
         return
       }
 
+      const hasPendingImpact =
+        monster.impactDelay !== undefined && monster.impactDelay > 0
+      const shouldDelayNetworkHit = hasPendingImpact && state === 'hit'
+
       monster.position = position
       monster.rotation = rotation
-      monster.state = state
-      this.updateMoveSpeedFromState(monster)
+      if (!shouldDelayNetworkHit) {
+        monster.state = state
+        this.updateMoveSpeedFromState(monster)
+      }
 
       monster.targetPosition = targetPosition
       this.monsters.set(id, { ...monster })

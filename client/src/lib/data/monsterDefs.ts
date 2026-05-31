@@ -10,6 +10,8 @@ export interface MonsterDefinition {
   attackRange: number
   chaseRange: number
   attackCooldown: number
+  attackImpactDelay: number
+  attackDamageTextDelay: number
   fleeHealthRatio: number
   fleeChance: number
   returnChance: number
@@ -19,9 +21,16 @@ export interface MonsterDefinition {
   animWalk: string
   animRun: string
   animAttack: string
+  animAttackIdle?: string
   animHit: string
   animDie: string
   animDead: string
+  /**
+   * When true (default), a killing blow plays the hit reaction before the death
+   * clip. Set false for monsters whose hit clip looks awkward as a death lead-in
+   * (e.g. scp939's long additive stagger).
+   */
+  deathPlaysHit?: boolean
   /** Optional weapon item id, or legacy model path relative to /models/. */
   weapon?: string
   /** Chance from 0-1 that the weapon is dropped on death. */

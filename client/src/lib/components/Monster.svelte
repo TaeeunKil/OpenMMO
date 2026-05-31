@@ -16,20 +16,24 @@
     position: { x: number; y: number; z: number }
     rotation: number
     monsterState: MonsterData['state']
+    attackCounter?: number
     id: string
     type: string
     lastDamageInfo?: MonsterData['lastDamageInfo']
     droppedWeaponItemDefId?: string
+    onHitFinished?: () => void
   }
 
   let {
     position,
     rotation,
     monsterState,
+    attackCounter,
     id,
     type,
     lastDamageInfo,
     droppedWeaponItemDefId,
+    onHitFinished,
   }: Props = $props()
 
   const def = $derived(getMonsterDef(type))
@@ -64,8 +68,11 @@
   let nametagGroup = $state<THREE.Group | undefined>(undefined)
   let animDebugInfo = $state('')
   let isDeadAnimationFinished = $state(false)
+  let isAttackAnimationFinished = $state(true)
   let lastMonsterState = $state<MonsterData['state'] | undefined>(undefined)
   let lastDeadAnimFinished = $state(false)
+  let lastAttackAnimFinished = $state(true)
+  let lastAttackCounter = $state<number | undefined>(undefined)
   let damageTextRef = $state<ReturnType<typeof DamageText>>()
   let lastAppliedOpacity = 1
   let materialsCloned = false
@@ -107,13 +114,17 @@
     })
   }
 
-  function playAnimation() {
+  function playAnimation(forceRestart = false) {
     if (!mixer || !$gltf) return
 
     let clipName = def?.animIdle ?? 'Idle'
     if (monsterState === 'walk') clipName = def?.animWalk ?? 'Walk'
     if (monsterState === 'run') clipName = def?.animRun ?? 'Run'
-    if (monsterState === 'attack') clipName = def?.animAttack ?? 'Attack'
+    if (monsterState === 'attack') {
+      clipName = isAttackAnimationFinished
+        ? (def?.animAttackIdle ?? def?.animIdle ?? 'Idle')
+        : (def?.animAttack ?? 'Attack')
+    }
     if (monsterState === 'hit') clipName = def?.animHit ?? 'Hit'
     if (monsterState === 'dead') {
       clipName = isDeadAnimationFinished
@@ -125,12 +136,13 @@
 
     if (clip) {
       const newAction = mixer.clipAction(clip)
-      if (newAction !== currentAction) {
-        if (currentAction) {
-          currentAction.fadeOut(0.2)
-        }
+      if (newAction !== currentAction || forceRestart) {
+        const isHitAnimation = monsterState === 'hit'
+        const fadeDuration = isHitAnimation ? 0.03 : 0.2
 
-        newAction.reset().fadeIn(0.2).play()
+        if (currentAction && newAction !== currentAction) {
+          currentAction.fadeOut(fadeDuration)
+        }
 
         if (monsterState === 'dead') {
           if (clipName === (def?.animDie ?? 'Die')) {
@@ -141,11 +153,22 @@
             newAction.setLoop(THREE.LoopRepeat, Infinity)
             newAction.clampWhenFinished = false
           }
+        } else if (monsterState === 'hit') {
+          newAction.setLoop(THREE.LoopOnce, 1)
+          newAction.clampWhenFinished = true
+        } else if (
+          monsterState === 'attack' &&
+          clipName === (def?.animAttack ?? 'Attack')
+        ) {
+          newAction.setLoop(THREE.LoopOnce, 1)
+          newAction.clampWhenFinished = true
         } else {
           newAction.setLoop(THREE.LoopRepeat, Infinity)
           newAction.clampWhenFinished = false
           isDeadAnimationFinished = false
         }
+
+        newAction.reset().fadeIn(fadeDuration).play()
 
         currentAction = newAction
       }
@@ -153,6 +176,9 @@
       console.warn(
         `Animation ${clipName} not found used for state ${monsterState}`
       )
+      if (monsterState === 'hit') {
+        onHitFinished?.()
+      }
       if (!currentAction && $gltf.animations.length > 0) {
         const firstClip = $gltf.animations[0]
         const newAction = mixer.clipAction(firstClip)
@@ -172,13 +198,24 @@
     }
 
     // 1. Sync animation with state
+    if (monsterState !== 'attack') {
+      isAttackAnimationFinished = true
+    }
     if (
+      lastAttackCounter !== attackCounter ||
       lastMonsterState !== monsterState ||
-      lastDeadAnimFinished !== isDeadAnimationFinished
+      lastDeadAnimFinished !== isDeadAnimationFinished ||
+      lastAttackAnimFinished !== isAttackAnimationFinished
     ) {
+      const attackCounterChanged = lastAttackCounter !== attackCounter
+      if (attackCounterChanged && monsterState === 'attack') {
+        isAttackAnimationFinished = false
+      }
+      lastAttackCounter = attackCounter
       lastMonsterState = monsterState
       lastDeadAnimFinished = isDeadAnimationFinished
-      playAnimation()
+      lastAttackAnimFinished = isAttackAnimationFinished
+      playAnimation(attackCounterChanged && monsterState === 'attack')
     }
 
     // 2. Update damage texts
@@ -248,10 +285,18 @@
         mixer = new THREE.AnimationMixer(clonedScene)
 
         mixer.addEventListener('finished', (e) => {
-          if (e.action.getClip().name === (def?.animDie ?? 'Die')) {
+          const finishedClipName = e.action.getClip().name
+          if (finishedClipName === (def?.animHit ?? 'Hit')) {
+            onHitFinished?.()
+          }
+          if (finishedClipName === (def?.animAttack ?? 'Attack')) {
+            isAttackAnimationFinished = true
+          }
+          if (finishedClipName === (def?.animDie ?? 'Die')) {
             isDeadAnimationFinished = true
           }
         })
+        playAnimation()
       }
     }
   })

@@ -55,6 +55,32 @@ function toRemotePlayer(sp: ServerPlayer): RemotePlayer {
   }
 }
 
+function emitCurrentPlayerDamageInfo(
+  playerId: string,
+  damage: number,
+  hit: boolean,
+  delayMs: number
+) {
+  const emit = () => {
+    const state = get(gameStore)
+    if (state.currentPlayer?.id !== playerId) return
+
+    updatePlayer(playerId, {
+      lastDamageInfo: {
+        damage,
+        hit,
+        trigger: (state.currentPlayer.lastDamageInfo?.trigger ?? 0) + 1,
+      },
+    })
+  }
+
+  if (delayMs > 0) {
+    globalThis.setTimeout(emit, delayMs)
+  } else {
+    emit()
+  }
+}
+
 /** Resolve object interaction for a remote player: find nearest placement, snap position/rotation. */
 async function applyObjectInteraction(
   playerId: string,
@@ -447,21 +473,19 @@ export function handleServerMessage(
     case 'MonsterAttackedPlayer': {
       const gameState = get(gameStore)
       const isCurrentPlayer = gameState.currentPlayer?.id === data.player_id
+      monsterManager.handleMonsterAttackStarted(data.monster_id, 250)
 
-      let damageInfo = undefined
       if (isCurrentPlayer) {
-        const prevTrigger =
-          gameState.currentPlayer?.lastDamageInfo?.trigger ?? 0
-        damageInfo = {
-          damage: data.damage,
-          hit: data.hit,
-          trigger: prevTrigger + 1,
-        }
+        emitCurrentPlayerDamageInfo(
+          data.player_id,
+          data.damage,
+          data.hit,
+          monsterManager.getMonsterAttackDamageTextDelayMs(data.monster_id)
+        )
       }
 
       updatePlayer(data.player_id, {
         health: data.current_health,
-        ...(isCurrentPlayer ? { lastDamageInfo: damageInfo } : {}),
       })
 
       const monsterTargetName = isCurrentPlayer

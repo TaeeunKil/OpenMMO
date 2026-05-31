@@ -1,5 +1,6 @@
 <script lang="ts">
   import Monster from '../Monster.svelte'
+  import { monsterManager } from '../../managers/monsterManager'
   import type { MonsterData } from '../../types/Monster'
 
   interface Props {
@@ -19,7 +20,9 @@
     position={monster.position}
     rotation={monster.rotation}
     monsterState={monster.state}
+    attackCounter={monster.attackCounter}
     lastDamageInfo={monster.lastDamageInfo}
     droppedWeaponItemDefId={monster.droppedWeaponItemDefId}
+    onHitFinished={() => monsterManager.handleMonsterHitFinished(monster.id)}
   />
 {/each}
