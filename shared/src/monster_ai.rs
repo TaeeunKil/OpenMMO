@@ -107,6 +107,7 @@ pub enum AiState {
     Idle,
     Walk,
     Run,
+    Chase,
     Attack,
     Hit,
     Dead,
@@ -120,6 +121,7 @@ impl AiState {
             AiState::Idle => MonsterState::Idle,
             AiState::Walk => MonsterState::Walk,
             AiState::Run => MonsterState::Run,
+            AiState::Chase => MonsterState::Run,
             AiState::Attack => MonsterState::Attack,
             AiState::Hit => MonsterState::Hit,
             AiState::Dead => MonsterState::Dead,
@@ -720,7 +722,7 @@ impl MonsterBrain {
         let target_move_threshold =
             param(params, "targetMoveThreshold", DEFAULT_TARGET_MOVE_THRESHOLD);
 
-        self.state = AiState::Attack;
+        self.state = AiState::Chase;
         self.move_speed = self.run_speed;
 
         let needs_repath = self.waypoints.is_empty()
@@ -1130,6 +1132,61 @@ mod tests {
     }
 
     #[test]
+    fn chase_to_attack_fires_without_waiting_full_cooldown() {
+        let mut brain = make_brain();
+        brain.state = AiState::Chase;
+        brain.target_player_id = Some("p1".into());
+        brain.attack_cooldown_ms = 4100.0;
+
+        let tree = BehaviorTree {
+            description: None,
+            root: BehaviorNode::Selector {
+                children: vec![
+                    BehaviorNode::Sequence {
+                        children: vec![
+                            BehaviorNode::Condition {
+                                name: "has_target".into(),
+                                params: HashMap::new(),
+                            },
+                            BehaviorNode::Condition {
+                                name: "target_in_range".into(),
+                                params: HashMap::from([("range".into(), 2.0)]),
+                            },
+                            BehaviorNode::Action {
+                                name: "attack_target".into(),
+                                params: HashMap::new(),
+                            },
+                        ],
+                    },
+                    BehaviorNode::Action {
+                        name: "idle".into(),
+                        params: HashMap::new(),
+                    },
+                ],
+            },
+        };
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        let players = vec![NearbyPlayer {
+            id: "p1".into(),
+            position: Position {
+                x: 11.9,
+                y: 0.0,
+                z: 10.0,
+            },
+            health: 10,
+        }];
+
+        let result = brain.tick_with_behavior_tree(16.0, &players, &tree, &DirectPath, &mut rng);
+
+        assert!(result
+            .commands
+            .iter()
+            .any(|c| matches!(c, AiCommand::Attack { .. })));
+        assert_eq!(brain.state(), AiState::Attack);
+    }
+
+    #[test]
     fn behavior_tree_chases_target_in_range() {
         let mut brain = make_brain();
         let tree = BehaviorTree {
@@ -1182,7 +1239,7 @@ mod tests {
                 }
             )
         }));
-        assert_eq!(brain.state(), AiState::Attack);
+        assert_eq!(brain.state(), AiState::Chase);
     }
 
     #[test]
