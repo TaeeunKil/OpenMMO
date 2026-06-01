@@ -15,6 +15,7 @@ import { housingManager } from '../managers/housingManager'
 import { bridgeManager } from '../managers/bridgeManager'
 import { objectManager } from '../managers/objectManager'
 import { groundItemManager } from '../managers/groundItemManager'
+import { deathDropDelayQueue } from '../managers/deathDropDelay'
 import { setInventory } from '../stores/inventoryStore'
 import type { MonsterData } from '../types/Monster'
 import { requestCameraReset } from '../stores/cameraStore'
@@ -662,17 +663,25 @@ export function handleServerMessage(
       setInventory(data.inventory)
       break
 
-    case 'GroundItemSpawned':
-      groundItemManager.spawn(data.item as ServerGroundItem, {
-        animateSpawn: true,
-      })
+    case 'GroundItemSpawned': {
+      const item = data.item as ServerGroundItem
+      deathDropDelayQueue.handleSpawn(
+        data.source_monster_id as string | undefined,
+        item.instance_id,
+        () =>
+          groundItemManager.spawn(item, {
+            animateSpawn: true,
+          })
+      )
       break
+    }
 
     case 'GroundItemAppeared':
       groundItemManager.spawn(data.item as ServerGroundItem)
       break
 
     case 'GroundItemRemoved':
+      deathDropDelayQueue.cancelSpawn(data.instance_id)
       groundItemManager.remove(data.instance_id)
       break
 

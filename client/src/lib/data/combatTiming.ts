@@ -1,6 +1,10 @@
 export const PLAYER_ATTACK_IMPACT_DELAY_MS = 540
 export const PLAYER_ATTACK_DAMAGE_TEXT_DELAY_MS = 750
 
+// Player melee reach. Shared by the combat controller (chase/attack break-off)
+// and the click-to-attack arrival check so the two never drift apart.
+export const PLAYER_ATTACK_RANGE_METERS = 2.0
+
 export const DEFAULT_MONSTER_ATTACK_IMPACT_DELAY_MS = 0
 
 // Fallback attack cooldown when a monster def is missing the field. Mirrors the

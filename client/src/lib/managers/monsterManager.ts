@@ -7,6 +7,7 @@ import { gameStore, type GameState } from '../stores/gameStore'
 import { remotePlayerManager } from './remotePlayerManager'
 import type { MonsterData } from '../types/Monster'
 import { getMonsterDef } from '../data/monsterDefs'
+import { deathDropDelayQueue } from './deathDropDelay'
 import type { Position } from '../utils/movementUtils'
 import type { TerrainHeightManager } from './terrainHeightManager'
 import type { TerrainSplatManager } from './terrainSplatManager'
@@ -201,6 +202,9 @@ class MonsterManager {
       const deathPlaysHit = this.deathPlaysHitFor(monster)
       // If we are waiting for an impact, delay the visual death
       if (monster.impactDelay && monster.impactDelay > 0) {
+        if (monster.droppedWeaponItemDefId) {
+          deathDropDelayQueue.expectDrop(id)
+        }
         monster.isDeadPending = true
       } else if (
         monster.state === 'hit' &&
@@ -300,6 +304,7 @@ class MonsterManager {
     for (const id of this.monsters.keys()) {
       ai_remove_brain(id)
     }
+    deathDropDelayQueue.reset()
     this.monsters.clear()
   }
 
@@ -344,6 +349,7 @@ class MonsterManager {
             this.applyMonsterPose(monster, {
               state: leadWithHit ? 'hit' : 'dead',
             })
+            deathDropDelayQueue.releaseForMonster(monster.id)
             monster.stateTimer = 0
             if (!leadWithHit) {
               monster.isDeadPending = false

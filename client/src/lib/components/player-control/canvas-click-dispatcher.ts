@@ -1,6 +1,7 @@
 import type { Position } from '../../utils/movementUtils'
 import type { ClickIntent } from '../../managers/inputHandler'
 import type { WallDirection } from '../../utils/house-geometry'
+import { PLAYER_ATTACK_RANGE_METERS } from '../../data/combatTiming'
 
 type InteractIntent = Extract<ClickIntent, { type: 'interact_object' }>
 
@@ -29,7 +30,7 @@ export function dispatchCanvasClickIntent(
 
   switch (intent.type) {
     case 'attack_monster':
-      if (intent.distance < 2.0) {
+      if (intent.distance < PLAYER_ATTACK_RANGE_METERS) {
         actions.attackInRange(intent.monsterId)
       } else {
         actions.chaseAndAttack(intent.monsterId, intent.hitPoint)

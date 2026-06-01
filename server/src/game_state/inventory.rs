@@ -268,7 +268,13 @@ impl super::GameState {
     }
 
     /// Insert a ground item into the world and announce it to nearby players.
-    pub(super) async fn spawn_ground_item(&self, ground_item: GroundItem) {
+    /// `source_monster_id` is set when the item was dropped by a dying monster
+    /// so the client can hold the drop until that monster's death plays out.
+    pub(super) async fn spawn_ground_item(
+        &self,
+        ground_item: GroundItem,
+        source_monster_id: Option<String>,
+    ) {
         let position = ground_item.position;
         {
             let mut ground_items = self.ground_items.write().await;
@@ -283,7 +289,10 @@ impl super::GameState {
         self.send_direct_message_to_players_within_position(
             &position,
             super::AGENT_EVENT_DELIVERY_RADIUS,
-            ServerMessage::GroundItemSpawned { item: ground_item },
+            ServerMessage::GroundItemSpawned {
+                item: ground_item,
+                source_monster_id,
+            },
             None,
         )
         .await;
@@ -333,7 +342,7 @@ impl super::GameState {
 
         self.mark_inventory_dirty(player_id).await;
         self.send_inventory_snapshot(player_id, snapshot).await;
-        self.spawn_ground_item(ground_item).await;
+        self.spawn_ground_item(ground_item, None).await;
     }
 
     pub async fn debug_drop_item(&self, player_id: &PlayerId, item_def_id: &str) {
@@ -364,12 +373,15 @@ impl super::GameState {
         };
 
         let instance_id = self.next_instance_id().await;
-        self.spawn_ground_item(GroundItem {
-            instance_id,
-            item_def_id: item_def_id.to_string(),
-            position,
-            floor_level,
-        })
+        self.spawn_ground_item(
+            GroundItem {
+                instance_id,
+                item_def_id: item_def_id.to_string(),
+                position,
+                floor_level,
+            },
+            None,
+        )
         .await;
     }
 

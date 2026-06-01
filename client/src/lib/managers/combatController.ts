@@ -1,14 +1,11 @@
 import type { Position } from '../utils/movementUtils'
 import { startBattleMusic, stopBattleMusic } from './bgmManager'
+import { PLAYER_ATTACK_RANGE_METERS } from '../data/combatTiming'
 
 export interface MonsterInfo {
   state?: string
   isDeadPending?: boolean
 }
-
-// Player melee reach. Keep this aligned with click-to-attack arrival checks so
-// combat re-approaches once a moving monster drifts outside player range.
-const PLAYER_ATTACK_RANGE = 2.0
 
 export type CombatUpdateResult =
   | { action: 'none' }
@@ -104,7 +101,7 @@ export class CombatController {
 
     if (isMoving) {
       // CHASING phase
-      if (dist <= PLAYER_ATTACK_RANGE) {
+      if (dist <= PLAYER_ATTACK_RANGE_METERS) {
         return { action: 'reached_attack_range' }
       }
 
@@ -117,7 +114,7 @@ export class CombatController {
     }
 
     // COMBAT phase (in range)
-    if (dist > PLAYER_ATTACK_RANGE && !isFinishingAttack) {
+    if (dist > PLAYER_ATTACK_RANGE_METERS && !isFinishingAttack) {
       return this.startChase(monsterObjPos)
     }
 
@@ -132,7 +129,7 @@ export class CombatController {
       // A new attack cycle is about to fire: unlike the break check above this
       // applies even mid-finish, so a target that fled during the swing ends
       // the current swing and re-approaches instead of attacking out of range.
-      if (dist > PLAYER_ATTACK_RANGE) {
+      if (dist > PLAYER_ATTACK_RANGE_METERS) {
         return this.startChase(monsterObjPos)
       }
 

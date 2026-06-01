@@ -167,12 +167,15 @@ impl super::GameState {
 
                     if let Some(item_def_id) = dropped_weapon_item_def_id {
                         let instance_id = self.next_instance_id().await;
-                        self.spawn_ground_item(GroundItem {
-                            instance_id,
-                            item_def_id,
-                            position: dropped_weapon_position(monster_position),
-                            floor_level: -1,
-                        })
+                        self.spawn_ground_item(
+                            GroundItem {
+                                instance_id,
+                                item_def_id,
+                                position: dropped_weapon_position(monster_position),
+                                floor_level: -1,
+                            },
+                            Some(monster_id.clone()),
+                        )
                         .await;
                     }
 
