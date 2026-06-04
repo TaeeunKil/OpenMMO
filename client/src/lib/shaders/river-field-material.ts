@@ -156,11 +156,6 @@ export function createRiverFieldMaterial(
       smoothstep(float(0.4), float(0.85), depthFactor)
     ).toVar()
 
-    const waterNightFactor = smoothstep(float(-0.05), float(0.1), sunY)
-      .mul(0.7)
-      .add(0.3)
-    waterColor.mulAssign(waterNightFactor)
-
     // GB = downstream flow direction (unit) from the bake; bilinear
     // filtering blends at confluences without a per-fragment branch.
     // Magnitude is scaled below by bed proximity to sea so the river
@@ -231,34 +226,27 @@ export function createRiverFieldMaterial(
     const screenUV = vClipPos.xy.mul(0.5).add(0.5)
     const screenUVFlipped = vec2(screenUV.x, float(1.0).sub(screenUV.y))
 
-    // ── Torch ──
-    const torchVec = uTorchPos.sub(vWorldPos)
-    const torchLen = length(torchVec)
-    const torchAtten = pow(
-      max(float(0), float(1).sub(torchLen.div(uTorchDistance))),
-      float(2)
-    )
-    const torchDir = torchVec.div(max(torchLen, float(0.001)))
-    const torchProximity = clamp(
-      torchAtten.mul(uTorchIntensity).mul(0.04),
-      0.0,
-      1.0
-    ).toVar()
-
-    // ── Refraction (shallow water shows tinted bed) ──
+    // ── Refraction (shallow water shows the bed) ──
     const refrDistort = rippleN.xz.mul(uRefractionStrength)
     const refrUV = clamp(screenUVFlipped.add(refrDistort), 0.0, 1.0)
-    const rawRefr = refractionTex.sample(refrUV).rgb
-    const waterAbsorbTint = vec3(0.45, 0.75, 0.7)
-    const tintedRefr = mix(rawRefr, rawRefr.mul(waterAbsorbTint), 0.55)
+    const tintedRefr = refractionTex.sample(refrUV).rgb
+    const refrNightFactor = float(1).sub(
+      smoothstep(float(-0.15), float(0.05), sunY)
+    )
+    const refrLuma = dot(tintedRefr, vec3(0.299, 0.587, 0.114))
+    const nightRefr = mix(
+      tintedRefr,
+      vec3(refrLuma),
+      refrNightFactor.mul(0.9)
+    ).mul(float(1).sub(refrNightFactor.mul(0.88)))
+    const refrColor = mix(tintedRefr, nightRefr, refrNightFactor)
     // Shallow-water mix peaks where depth is low (near banks), fades
     // off in deep water so the body color dominates mid-channel.
     const refrShallow = float(1)
       .sub(smoothstep(float(0.05), float(0.5), depthFactor))
       .toVar()
     const refrMix = refrShallow.mul(0.85).toVar()
-    refrMix.mulAssign(float(1).sub(torchProximity.mul(0.9)))
-    waterColor.assign(mix(waterColor, tintedRefr, refrMix))
+    waterColor.assign(mix(waterColor, refrColor, refrMix))
 
     // ── Sky reflection (condensed sea pattern) ──
     // `reflT` is a uniform vertical scroll (no per-pixel flow term)
@@ -297,15 +285,15 @@ export function createRiverFieldMaterial(
     )
     const dayFactor = smoothstep(float(0.05), float(0.3), sunY)
 
-    const hazeColorBase = vec3(0.04, 0.06, 0.12)
+    const hazeColorBase = vec3(0.021, 0.026, 0.035)
       .mul(nightFactor)
       .add(vec3(0.7, 0.35, 0.15).mul(twilightFactor))
       .add(vec3(0.45, 0.62, 0.82).mul(dayFactor))
-    const zenithColor = vec3(0.02, 0.04, 0.1)
+    const zenithColor = vec3(0.015, 0.019, 0.03)
       .mul(nightFactor)
       .add(vec3(0.15, 0.1, 0.25).mul(twilightFactor))
       .add(vec3(0.12, 0.35, 0.8).mul(dayFactor))
-    const groundColor = vec3(0.02, 0.03, 0.06)
+    const groundColor = vec3(0.012, 0.015, 0.022)
       .mul(nightFactor)
       .add(vec3(0.12, 0.06, 0.04).mul(twilightFactor))
       .add(vec3(0.08, 0.12, 0.15).mul(dayFactor))
@@ -336,6 +324,23 @@ export function createRiverFieldMaterial(
     )
     skyReflection.assign(mix(skyReflection, cloudColor, cloudWeight.mul(0.95)))
 
+    const cloudLuma = dot(cloudColor, vec3(0.299, 0.587, 0.114))
+    const cloudHorizonWeight = smoothstep(float(0.15), float(0.45), skyY)
+    const sunsetCloudColor = mix(cloudColor, vec3(cloudLuma), 0.52)
+      .mul(vec3(0.62, 0.18, 0.075))
+      .mul(0.12)
+      .add(vec3(0.006, 0.003, 0.0015).mul(sunsetFactor))
+    const sunsetCloudWeight = cloudHorizonWeight.mul(twilightFactor).mul(0.85)
+    skyReflection.assign(
+      mix(skyReflection, sunsetCloudColor, sunsetCloudWeight)
+    )
+
+    const nightCloudColor = mix(cloudColor, vec3(cloudLuma), 0.7)
+      .mul(0.08)
+      .add(vec3(0.004, 0.006, 0.01))
+    const nightCloudWeight = cloudHorizonWeight.mul(nightFactor).mul(0.85)
+    skyReflection.assign(mix(skyReflection, nightCloudColor, nightCloudWeight))
+
     const reflectionSample = reflectionTex.sample(
       clamp(screenUVFlipped.add(rippleN.xz.mul(0.01)), 0.0, 1.0)
     )
@@ -343,13 +348,36 @@ export function createRiverFieldMaterial(
       mix(skyReflection, reflectionSample.rgb, reflectionSample.a.mul(0.5))
     )
 
+    // Torch remains reflection-only: its flickering PointLight intensity
+    // creates a warm glint without changing river body color, refraction,
+    // or alpha. Time-of-day still lives in the sky/cloud reflection above.
+    const torchVec = uTorchPos.sub(vWorldPos)
+    const torchLen = length(torchVec)
+    const torchAtten = pow(
+      max(float(0), float(1).sub(torchLen.div(uTorchDistance))),
+      float(2)
+    )
+    const torchDir = torchVec.div(max(torchLen, float(0.001)))
+    const torchSpecNormal = normalize(mix(vec3(0, 1, 0), rippleN, 0.75))
+    const torchHalfDir = normalize(torchDir.add(viewDir))
+    const torchNdotH = max(dot(torchSpecNormal, torchHalfDir), 0.0)
+    const torchTightAtten = torchAtten.mul(torchAtten)
+    const torchReflection = uTorchColor.rgb
+      .mul(pow(torchNdotH, float(48)))
+      .mul(torchTightAtten)
+      .mul(uTorchIntensity)
+      .mul(0.004)
+      .mul(depthFactor)
+      .toVar()
+
     // ── Specular ──
     const specNormal = normalize(mix(vec3(0, 1, 0), rippleN, 0.3))
     const halfDir = normalize(vec3(uSunDirection).add(viewDir))
     const NdotH = max(dot(specNormal, halfDir), 0.0)
     const specular = uSunColor.rgb.mul(pow(NdotH, float(128)).mul(0.35)).toVar()
 
-    // Sun sparkle
+    // Surface sparkle uses the same daylight path regardless of time of day;
+    // only the sky/cloud reflection above carries the day/night/twilight tint.
     const sparkleT = uTime.mul(0.05)
     const sparkleUV1 = vWorldPos.xz
       .mul(NORMAL_SCALE.mul(2.5))
@@ -359,17 +387,9 @@ export function createRiverFieldMaterial(
       .add(flow.mul(sparkleT.mul(0.6)))
     const sp1 = normalMapTex.sample(sparkleUV1).r
     const sp2 = normalMapTex.sample(sparkleUV2).g
-    const sunSparkleStrength = smoothstep(float(0), float(0.15), sunY).mul(
-      float(0.3).add(float(0.7).mul(sunY))
-    )
-    const moonSparkleStrength = float(1)
-      .sub(smoothstep(float(-0.05), float(0.05), sunY))
-      .mul(0.15)
-      .mul(smoothstep(float(0), float(0.1), uMoonBrightness))
     const sparkle = smoothstep(float(1.35), float(1.5), sp1.add(sp2))
       .mul(3.0)
       .mul(depthFactor)
-      .mul(max(sunSparkleStrength, moonSparkleStrength))
     specular.addAssign(uSunColor.rgb.mul(sparkle))
 
     // ── Fresnel + final composite ──
@@ -387,50 +407,44 @@ export function createRiverFieldMaterial(
     // tinted bed reads through shallow water without being washed by
     // sky tint (matches the sea's weighting at shore).
     const reflectionBase = mix(float(0.35), float(0.05), refrShallow.mul(0.9))
-    const reflectionMix = clamp(reflectionBase.add(fresnel), 0.0, 0.9)
+    const twilightReflectionLift = smoothstep(
+      float(0.04),
+      float(0.35),
+      depthFactor
+    )
+      .mul(twilightFactor)
+      .mul(0.18)
+    const nightReflectionLift = smoothstep(
+      float(0.04),
+      float(0.35),
+      depthFactor
+    )
+      .mul(nightFactor)
+      .mul(0.28)
+    const reflectionMix = clamp(
+      reflectionBase
+        .add(fresnel)
+        .add(twilightReflectionLift)
+        .add(nightReflectionLift),
+      0.0,
+      0.9
+    )
     const color = mix(waterColor, skyReflection, reflectionMix)
       .add(specular.mul(depthFactor))
       .toVar()
 
     color.assign(mix(color, reflectionSample.rgb, reflectionSample.a.mul(0.3)))
 
-    const nightDarken = smoothstep(float(-0.05), float(0.1), sunY)
-      .mul(0.75)
-      .add(0.25)
-    color.mulAssign(nightDarken)
-
-    // Moon
-    const moonDir = normalize(vec3(uSunDirection).negate())
-    const moonNdotL = max(dot(rippleN, moonDir), 0.0)
-    const moonAmbient = vec3(0.05, 0.07, 0.12)
-      .mul(uMoonBrightness)
-      .mul(moonNdotL)
-    color.addAssign(moonAmbient)
-    const moonHalfDir = normalize(moonDir.add(viewDir))
-    const moonNdotH = max(dot(specNormal, moonHalfDir), 0.0)
-    const moonSpec = vec3(0.55, 0.65, 0.85)
-      .mul(pow(moonNdotH, float(128)))
-      .mul(uMoonBrightness)
-      .mul(0.1)
-    color.addAssign(moonSpec.mul(depthFactor))
-
-    // Torch
-    const torchNdotL = max(dot(rippleN, torchDir), 0.0)
-    const torchDiffuse = uTorchColor.rgb
-      .mul(torchNdotL)
-      .mul(torchAtten)
-      .mul(uTorchIntensity)
-      .mul(0.0015)
-    const torchSpecNormal = normalize(mix(vec3(0, 1, 0), rippleN, 0.6))
-    const torchHalfDir = normalize(torchDir.add(viewDir))
-    const torchNdotH = max(dot(torchSpecNormal, torchHalfDir), 0.0)
-    const torchSpec = uTorchColor.rgb
-      .mul(pow(torchNdotH, float(24)))
-      .mul(torchAtten)
-      .mul(uTorchIntensity)
-      .mul(0.025)
-    color.addAssign(torchDiffuse)
-    color.addAssign(torchSpec.mul(depthFactor))
+    // Night grade only mutes the final river body; torch reflection is added
+    // afterward so flicker stays warm and visible.
+    const nightLuma = dot(color, vec3(0.299, 0.587, 0.114))
+    const nightMutedColor = mix(
+      color,
+      vec3(nightLuma),
+      nightFactor.mul(0.28)
+    ).mul(float(1).sub(nightFactor.mul(0.14)))
+    color.assign(mix(color, nightMutedColor, nightFactor))
+    color.addAssign(torchReflection)
 
     // 5 cm hard edge anchors the visible bank exactly at the carve
     // boundary; body alpha ramps to 0.95 over the next `uMaxDepth − 0.05 m`.
@@ -440,7 +454,6 @@ export function createRiverFieldMaterial(
       float(0.95),
       smoothstep(float(0.05), uMaxDepth, depth)
     ).toVar()
-    bodyAlpha.assign(max(bodyAlpha, torchProximity.mul(0.45)))
     const seaFade = smoothstep(uSeaFadeBottom, uSeaFadeTop, bedHeight)
     const alpha = float(0.95).mul(depthEdgeCut).mul(bodyAlpha).mul(seaFade)
 
