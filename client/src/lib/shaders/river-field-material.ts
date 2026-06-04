@@ -133,6 +133,8 @@ export function createRiverFieldMaterial(
   // ── Fragment ──
   const fragmentNode = Fn(() => {
     const sunY = uSunDirection.y
+    // Rec. 601 luma weights, reused for every desaturation below.
+    const LUMA_REC601 = vec3(0.299, 0.587, 0.114)
 
     // The quad is a tile-sized PlaneGeometry → its built-in vUv already
     // covers [0,1] across the heightmap-aligned 65×65 textures. Half-
@@ -230,16 +232,15 @@ export function createRiverFieldMaterial(
     const refrDistort = rippleN.xz.mul(uRefractionStrength)
     const refrUV = clamp(screenUVFlipped.add(refrDistort), 0.0, 1.0)
     const tintedRefr = refractionTex.sample(refrUV).rgb
-    const refrNightFactor = float(1).sub(
-      smoothstep(float(-0.15), float(0.05), sunY)
+    // Time-of-day weight reused for sky/cloud/body grading further down.
+    const nightFactor = float(1)
+      .sub(smoothstep(float(-0.15), float(0.05), sunY))
+      .toVar()
+    const refrLuma = dot(tintedRefr, LUMA_REC601)
+    const nightRefr = mix(tintedRefr, vec3(refrLuma), nightFactor.mul(0.9)).mul(
+      float(1).sub(nightFactor.mul(0.88))
     )
-    const refrLuma = dot(tintedRefr, vec3(0.299, 0.587, 0.114))
-    const nightRefr = mix(
-      tintedRefr,
-      vec3(refrLuma),
-      refrNightFactor.mul(0.9)
-    ).mul(float(1).sub(refrNightFactor.mul(0.88)))
-    const refrColor = mix(tintedRefr, nightRefr, refrNightFactor)
+    const refrColor = mix(tintedRefr, nightRefr, nightFactor)
     // Shallow-water mix peaks where depth is low (near banks), fades
     // off in deep water so the body color dominates mid-channel.
     const refrShallow = float(1)
@@ -277,9 +278,6 @@ export function createRiverFieldMaterial(
     const reflectDir = reflect(viewDir.negate(), reflNormal)
     const skyY = clamp(reflectDir.y.mul(0.5).add(0.5), 0.0, 1.0)
 
-    const nightFactor = float(1).sub(
-      smoothstep(float(-0.15), float(0.05), sunY)
-    )
     const twilightFactor = smoothstep(float(-0.15), float(0.0), sunY).mul(
       float(1).sub(smoothstep(float(0.05), float(0.3), sunY))
     )
@@ -324,7 +322,7 @@ export function createRiverFieldMaterial(
     )
     skyReflection.assign(mix(skyReflection, cloudColor, cloudWeight.mul(0.95)))
 
-    const cloudLuma = dot(cloudColor, vec3(0.299, 0.587, 0.114))
+    const cloudLuma = dot(cloudColor, LUMA_REC601)
     const cloudHorizonWeight = smoothstep(float(0.15), float(0.45), skyY)
     const sunsetCloudColor = mix(cloudColor, vec3(cloudLuma), 0.52)
       .mul(vec3(0.62, 0.18, 0.075))
@@ -407,20 +405,14 @@ export function createRiverFieldMaterial(
     // tinted bed reads through shallow water without being washed by
     // sky tint (matches the sea's weighting at shore).
     const reflectionBase = mix(float(0.35), float(0.05), refrShallow.mul(0.9))
-    const twilightReflectionLift = smoothstep(
+    // Deep-water reflection gets lifted at dusk/night; both share this ramp.
+    const depthReflLift = smoothstep(
       float(0.04),
       float(0.35),
       depthFactor
-    )
-      .mul(twilightFactor)
-      .mul(0.18)
-    const nightReflectionLift = smoothstep(
-      float(0.04),
-      float(0.35),
-      depthFactor
-    )
-      .mul(nightFactor)
-      .mul(0.28)
+    ).toVar()
+    const twilightReflectionLift = depthReflLift.mul(twilightFactor).mul(0.18)
+    const nightReflectionLift = depthReflLift.mul(nightFactor).mul(0.28)
     const reflectionMix = clamp(
       reflectionBase
         .add(fresnel)
@@ -437,7 +429,7 @@ export function createRiverFieldMaterial(
 
     // Night grade only mutes the final river body; torch reflection is added
     // afterward so flicker stays warm and visible.
-    const nightLuma = dot(color, vec3(0.299, 0.587, 0.114))
+    const nightLuma = dot(color, LUMA_REC601)
     const nightMutedColor = mix(
       color,
       vec3(nightLuma),
