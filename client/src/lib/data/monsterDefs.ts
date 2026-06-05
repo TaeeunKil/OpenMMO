@@ -23,6 +23,7 @@ export interface MonsterDefinition {
   animHit: string
   animDie: string
   animDead: string
+  material?: string
   /**
    * When true (default), a killing blow plays the hit reaction before the death
    * clip. Set false for monsters whose hit clip looks awkward as a death lead-in

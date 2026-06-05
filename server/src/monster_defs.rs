@@ -56,6 +56,8 @@ pub struct MonsterDefinition {
     pub anim_die: String,
     #[serde(rename = "animDead")]
     pub anim_dead: String,
+    #[serde(default)]
+    pub material: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -21,6 +21,7 @@ export interface MonsterData {
     trigger: number
   }
   pendingDamage?: number // Temporary storage for impact sync
+  pendingSwordHitSoundUrl?: string
   // Damage number scheduled from the attack start. Captures damage/hit at
   // schedule time to survive a follow-up attack overwriting pendingDamage.
   pendingDamageText?: { delay: number; damage: number; hit: boolean }

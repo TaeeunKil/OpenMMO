@@ -4,13 +4,24 @@ import * as THREE from 'three'
 import { networkManager } from '../network/socket'
 import { get } from 'svelte/store'
 import { gameStore, type GameState } from '../stores/gameStore'
+import { inventoryStore } from '../stores/inventoryStore'
 import { remotePlayerManager } from './remotePlayerManager'
 import type { MonsterData } from '../types/Monster'
 import { getMonsterDef } from '../data/monsterDefs'
+import { getItemDef } from '../data/itemDefs'
+import {
+  getMaterialHitSoundUrl,
+  getMaterialMissSoundUrl,
+} from '../data/materialImpactSounds'
 import { deathDropDelayQueue } from './deathDropDelay'
 import type { Position } from '../utils/movementUtils'
 import type { TerrainHeightManager } from './terrainHeightManager'
 import type { TerrainSplatManager } from './terrainSplatManager'
+import {
+  playSwordHitSound,
+  playSwordMissSound,
+  SWORD_MISS_DELAY_MS,
+} from './sfxManager'
 import type { NoSpawnZone } from './zoneManager'
 import { TILE_DIM, worldToTileCoord } from './terrain-height-types'
 import { TERRAIN_TILE_SIZE } from '../components/game-scene/terrain-utils'
@@ -194,6 +205,13 @@ class MonsterManager {
     return getMonsterDef(monster.type)?.deathPlaysHit ?? true
   }
 
+  private playPendingSwordHitSound(monster: MonsterData) {
+    if (!monster.pendingSwordHitSoundUrl) return
+
+    playSwordHitSound(monster.pendingSwordHitSoundUrl)
+    monster.pendingSwordHitSoundUrl = undefined
+  }
+
   handleMonsterDead(id: string, droppedWeaponItemDefId?: string | null) {
     const monster = this.monsters.get(id)
     if (monster) {
@@ -244,9 +262,31 @@ class MonsterManager {
     monster.impactDelay = PLAYER_ATTACK_IMPACT_DELAY_MS
     monster.targetPlayerId = playerId
     monster.isLastHitSuccess = hit
+    const isLocalPlayerAttack = playerId === get(gameStore).currentPlayer?.id
+    const weaponItemDefId = isLocalPlayerAttack
+      ? get(inventoryStore).equipped.main_hand?.item_def_id
+      : undefined
+    const weaponMaterial = weaponItemDefId
+      ? getItemDef(weaponItemDefId)?.material
+      : undefined
+    if (hit && isLocalPlayerAttack) {
+      const monsterMaterial = getMonsterDef(monster.type)?.material
+      monster.pendingSwordHitSoundUrl = getMaterialHitSoundUrl(
+        weaponMaterial,
+        monsterMaterial
+      )
+    } else {
+      monster.pendingSwordHitSoundUrl = undefined
+    }
+    if (!hit && isLocalPlayerAttack) {
+      playSwordMissSound(
+        getMaterialMissSoundUrl(weaponMaterial),
+        SWORD_MISS_DELAY_MS
+      )
+    }
     // Temporarily store damage to show at impact
     monster.pendingDamage = damage
-    if (playerId === get(gameStore).currentPlayer?.id) {
+    if (isLocalPlayerAttack) {
       monster.pendingDamageText = {
         delay: PLAYER_ATTACK_DAMAGE_TEXT_DELAY_MS,
         damage,
@@ -519,6 +559,9 @@ class MonsterManager {
     if (update.state) {
       monster.state = update.state
       this.updateMoveSpeedFromState(monster)
+      if (update.state === 'hit' || update.state === 'dead') {
+        this.playPendingSwordHitSound(monster)
+      }
     }
 
     if (update.rotation !== undefined) {

@@ -7,6 +7,7 @@
   import { monsterManager } from '../managers/monsterManager'
   import { groundItemManager } from '../managers/groundItemManager'
   import { combatController } from '../managers/combatController'
+  import { preloadSwordHitSound, preloadSwordMissSound } from '../managers/sfxManager'
   import { inputHandler, type ClickIntent } from '../managers/inputHandler'
   import { mapEditorMode, housingEditorMode, debugSpeedMode, torchLightEnabled } from '../stores/debugStore'
   import { localTorchEquipped } from '../stores/inventoryStore'
@@ -940,6 +941,9 @@
   }
 
   onMount(() => {
+    preloadSwordHitSound()
+    preloadSwordMissSound()
+
     const removeInputListeners = inputHandler.setupEventListeners(
       renderer.domElement,
       handleCanvasClickIntent

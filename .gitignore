@@ -58,6 +58,8 @@ __pycache__/
 
 # Generated data files
 data/*.db
+data/items.json
+data/map_labels.json
 data/monsters.json
 data/terrain/
 data/housing/

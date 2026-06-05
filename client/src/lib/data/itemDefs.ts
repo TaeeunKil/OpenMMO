@@ -11,6 +11,7 @@ export interface ItemDefinition {
   icon: string
   worldModel?: string
   damageDice?: string
+  material?: string
 }
 
 const itemDefs = itemsJson as Record<string, ItemDefinition>

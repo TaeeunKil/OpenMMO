@@ -1,0 +1,17 @@
+{
+  "defaultHitSound": "/sounds/sword-leather.ogg",
+  "defaultMissSound": "/sounds/sword-miss3.ogg",
+  "hitSounds": [
+    {
+      "attackerMaterial": "metal",
+      "targetMaterial": "flesh",
+      "sound": "/sounds/sword-flesh3.ogg"
+    }
+  ],
+  "missSounds": [
+    {
+      "attackerMaterial": "metal",
+      "sound": "/sounds/sword-miss3.ogg"
+    }
+  ]
+}

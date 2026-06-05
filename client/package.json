@@ -8,14 +8,15 @@
     "dev": "npm run build:wasm && vite",
     "build": "npm run build:wasm && vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "check": "npm run generate:csv && svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "eslint . --ext .js,.ts,.svelte",
+    "lint": "npm run generate:csv && eslint . --ext .js,.ts,.svelte",
     "lint:fix": "eslint . --ext .js,.ts,.svelte --fix",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "generate:data": "node ../tools/convert.mjs && node ../tools/extract-animation-durations.mjs"
+    "test": "npm run generate:csv && vitest run",
+    "test:watch": "npm run generate:csv && vitest",
+    "generate:csv": "node ../tools/convert.mjs",
+    "generate:data": "npm run generate:csv && node ../tools/extract-animation-durations.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",

@@ -19,6 +19,8 @@ pub struct ItemDefinition {
     pub world_model: Option<String>,
     #[serde(rename = "damageDice")]
     pub damage_dice: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
 }
 
 #[derive(Debug, Clone)]
