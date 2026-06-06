@@ -127,8 +127,7 @@
     const pooled = waterMatPool.pop()
     if (pooled) return pooled
     // Shared textures must be loaded before creating a new material
-    if (!normalMap || !foamMap || !causticsMap || !refractionMap || !reflectionMap)
-      return null
+    if (!normalMap || !foamMap || !causticsMap) return null
     const result = createWaterMaterial({
       heightmapTexture: waterHeightFallbackTex,
       normalMap,
@@ -277,9 +276,7 @@
       !heightManager ||
       !normalMap ||
       !foamMap ||
-      !causticsMap ||
-      !refractionMap ||
-      !reflectionMap
+      !causticsMap
     )
       return
 

@@ -35,15 +35,22 @@ export function initScene(
     TERRAIN_TILE_SEGMENTS
   )
 
-  // On the tightest mobile budget, skip the environment map, water textures, and
-  // refraction/reflection managers to avoid a large GPU allocation spike during
-  // world entry.
+  // Load water textures
+  const loader = new THREE.TextureLoader()
+  const waterNormalMap = loader.load('/textures/waternormals.jpg')
+  waterNormalMap.wrapS = waterNormalMap.wrapT = THREE.RepeatWrapping
+
+  const waterFoamMapPromise = loadFoamTexture()
+  const waterCausticsMapPromise = loadCausticsTexture()
+
+  // On mobile, keep the water surface but skip the environment map and
+  // refraction/reflection render targets to avoid a large GPU allocation spike.
   if (options.skipWaterEffects) {
     return {
       terrainGeometry,
-      waterNormalMap: null,
-      waterFoamMapPromise: Promise.resolve(null),
-      waterCausticsMapPromise: Promise.resolve(null),
+      waterNormalMap,
+      waterFoamMapPromise,
+      waterCausticsMapPromise,
       refractionManager: null,
       refractionTexture: null,
       reflectionManager: null,
@@ -59,14 +66,6 @@ export function initScene(
     scene.environmentIntensity = 0.5
     pmremGenerator.dispose()
   })
-
-  // Load water textures
-  const loader = new THREE.TextureLoader()
-  const waterNormalMap = loader.load('/textures/waternormals.jpg')
-  waterNormalMap.wrapS = waterNormalMap.wrapT = THREE.RepeatWrapping
-
-  const waterFoamMapPromise = loadFoamTexture()
-  const waterCausticsMapPromise = loadCausticsTexture()
 
   // Initialize render managers
   const refractionManager = new RefractionRenderManager(

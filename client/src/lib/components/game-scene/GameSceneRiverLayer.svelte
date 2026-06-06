@@ -150,7 +150,7 @@
     tileZ: number
   ): Promise<void> {
     if (inflightTiles.has(id) || tileMeshes.has(id)) return
-    if (!riverFieldManager || !heightManager || !normalMap || !reflectionMap || !refractionMap) return
+    if (!riverFieldManager || !heightManager || !normalMap) return
     inflightTiles.add(id)
     try {
       const [, field] = await Promise.all([
@@ -203,8 +203,7 @@
   }
 
   $effect(() => {
-    if (!riverFieldManager || !heightManager || !normalMap || !reflectionMap || !refractionMap)
-      return
+    if (!riverFieldManager || !heightManager || !normalMap) return
 
     const currentIds = new Set(terrainTiles.map((t) => t.id))
     for (const id of [...tileMeshes.keys()]) {

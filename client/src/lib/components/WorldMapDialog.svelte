@@ -6,11 +6,7 @@
   const REGION_PX = REGION_SIZE * TILE_DIM // 1024
 
   const MIN_ZOOM = 1
-  const MAX_ZOOM = 32
   const DEFAULT_ZOOM = 8
-  const IPHONE_DEFAULT_ZOOM = 2
-  const IPHONE_MAX_ZOOM = 4
-  const IPHONE_IMAGE_CACHE_LIMIT = 32
 
   // --- Shared place-name labels (generated from data-src/map_labels.csv) ---
   type LabelKind = 'continent' | 'capital' | 'city' | 'town' | 'sea' | 'island'
@@ -70,12 +66,13 @@
   import { minimapVersion } from '../stores/editorStore'
   import { regionMinimapServerUrl } from '../terrain/regionMinimapGenerator'
   import { networkManager } from '../network/socket'
-  import { shouldUseIphoneRenderBudget } from '../stores/graphicsSettings'
+  import { graphicsQuality, getEffectivePreset } from '../stores/graphicsSettings'
 
-  const iphoneMapBudget = shouldUseIphoneRenderBudget()
-  const defaultZoomSpan = iphoneMapBudget ? IPHONE_DEFAULT_ZOOM : DEFAULT_ZOOM
-  const maxZoomSpan = iphoneMapBudget ? IPHONE_MAX_ZOOM : MAX_ZOOM
-  const imageCacheLimit = iphoneMapBudget ? IPHONE_IMAGE_CACHE_LIMIT : Infinity
+  const graphicsPreset = $derived(getEffectivePreset($graphicsQuality))
+  const mobileMapBudget = $derived(graphicsPreset.renderBudget === 'mobile')
+  const defaultZoomSpan = $derived(graphicsPreset.worldMapDefaultZoomSpan)
+  const maxZoomSpan = $derived(graphicsPreset.worldMapMaxZoomSpan)
+  const imageCacheLimit = $derived(graphicsPreset.worldMapImageCacheLimit)
 
   function loadRegionImage(rx: number, rz: number): Promise<HTMLImageElement | null> {
     const key = `${rx},${rz}`
@@ -115,7 +112,7 @@
   let camZ = $state(0)
 
   // --- Zoom state (in regions/km) ---
-  let zoomSpan = $state(defaultZoomSpan)
+  let zoomSpan = $state(DEFAULT_ZOOM)
 
   // Restore saved view state or center on player when dialog opens
   $effect(() => {
@@ -384,7 +381,7 @@
 
   // --- Actions ---
   function close() {
-    if (iphoneMapBudget) {
+    if (mobileMapBudget) {
       renderGeneration++
       imageCache.clear()
       pendingLoads.clear()
@@ -459,7 +456,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="backdrop" onclick={handleBackdropClick}>
-  <div class="dialog" class:iphone-map-budget={iphoneMapBudget} role="dialog" aria-modal="true">
+  <div class="dialog" class:mobile-map-budget={mobileMapBudget} role="dialog" aria-modal="true">
     <div class="header">
       <h2>World Map</h2>
       <div class="controls">
@@ -526,7 +523,7 @@
     overflow: hidden;
   }
 
-  .dialog.iphone-map-budget {
+  .dialog.mobile-map-budget {
     width: calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right));
     height: min(
       calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom)),

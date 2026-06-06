@@ -92,28 +92,22 @@ function getTargetVolume(): number {
   return get(bgmMuted) ? 0 : get(bgmVolume)
 }
 
-function applyVolume(el: HTMLAudioElement | null) {
-  if (el) el.volume = getTargetVolume()
+function applyAudioSettings(el: HTMLAudioElement | null) {
+  if (!el) return
+  const targetVolume = getTargetVolume()
+  // iOS Safari does not reliably honor programmatic `volume` changes on
+  // media elements, so use the native muted flag as the hard mute path.
+  el.muted = targetVolume <= 0
+  try {
+    el.volume = targetVolume
+  } catch {
+    // Some browsers expose volume as effectively read-only for media elements.
+  }
 }
 
 let isFadingOut = false
 let battleAudio: HTMLAudioElement | null = null
-
-bgmVolume.subscribe((v) => {
-  clearTimeout(volumeSaveTimer)
-  volumeSaveTimer = setTimeout(
-    () => localStorage.setItem(STORAGE_KEY_VOLUME, String(v)),
-    300
-  )
-  applyVolume(audio)
-  if (!isFadingOut) applyVolume(battleAudio)
-})
-
-bgmMuted.subscribe((m) => {
-  localStorage.setItem(STORAGE_KEY_MUTED, String(m))
-  applyVolume(audio)
-  if (!isFadingOut) applyVolume(battleAudio)
-})
+let isBattlePlaying = false
 
 function shufflePlaylist() {
   playlist = [...BGM_FILES]
@@ -143,6 +137,10 @@ function playNext() {
 
 function playTrack() {
   if (isBattlePlaying) return
+  if (get(bgmMuted)) {
+    currentBgmTrack.set('')
+    return
+  }
   if (playlistIndex >= playlist.length) {
     shufflePlaylist()
   }
@@ -159,7 +157,7 @@ function playTrack() {
     })
   }
 
-  applyVolume(audio)
+  applyAudioSettings(audio)
   audio.dataset.trackName = trackName
   audio.src = `/bgm/${file}`
   audio.play().catch(() => {})
@@ -179,7 +177,6 @@ export function startBgm() {
 let battleLingerTimer: ReturnType<typeof setTimeout> | undefined
 let battleFadeTimer: ReturnType<typeof setInterval> | undefined
 let battleQuietTimer: ReturnType<typeof setTimeout> | undefined
-let isBattlePlaying = false
 
 export function startBattleMusic() {
   if (isBattlePlaying) return
@@ -210,11 +207,13 @@ export function startBattleMusic() {
     })
   }
 
-  applyVolume(battleAudio)
+  applyAudioSettings(battleAudio)
   battleAudio.dataset.trackName = trackName
   battleAudio.currentTime = 0
   battleAudio.src = `/bgm/${file}`
-  battleAudio.play().catch(() => {})
+  if (!get(bgmMuted)) {
+    battleAudio.play().catch(() => {})
+  }
 }
 
 export function stopBattleMusic() {
@@ -275,6 +274,7 @@ function scheduleNormalBgmResume() {
 
 function resumeNormalBgm() {
   if (isBattlePlaying) return
+  if (get(bgmMuted)) return
   if (!audio) {
     playTrack()
     return
@@ -282,8 +282,57 @@ function resumeNormalBgm() {
   if (audio.ended || !audio.src) {
     playTrack()
   } else {
-    applyVolume(audio)
+    applyAudioSettings(audio)
     audio.play().catch(() => {})
     currentBgmTrack.set(audio.dataset.trackName ?? '')
   }
 }
+
+function pauseForMute() {
+  audio?.pause()
+  battleAudio?.pause()
+  currentBgmTrack.set('')
+}
+
+function resumeAfterUnmute() {
+  applyAudioSettings(audio)
+  applyAudioSettings(battleAudio)
+
+  if (isBattlePlaying) {
+    if (battleAudio) {
+      battleAudio.play().catch(() => {})
+      currentBgmTrack.set(battleAudio.dataset.trackName ?? '')
+    }
+    return
+  }
+
+  if (started) {
+    resumeNormalBgm()
+  }
+}
+
+bgmVolume.subscribe((v) => {
+  clearTimeout(volumeSaveTimer)
+  volumeSaveTimer = setTimeout(
+    () => localStorage.setItem(STORAGE_KEY_VOLUME, String(v)),
+    300
+  )
+  applyAudioSettings(audio)
+  if (!isFadingOut) applyAudioSettings(battleAudio)
+  if (getTargetVolume() <= 0) {
+    pauseForMute()
+  } else if (!get(bgmMuted)) {
+    resumeAfterUnmute()
+  }
+})
+
+bgmMuted.subscribe((m) => {
+  localStorage.setItem(STORAGE_KEY_MUTED, String(m))
+  applyAudioSettings(audio)
+  applyAudioSettings(battleAudio)
+  if (m) {
+    pauseForMute()
+  } else {
+    resumeAfterUnmute()
+  }
+})

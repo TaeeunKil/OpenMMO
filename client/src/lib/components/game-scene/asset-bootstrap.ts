@@ -4,7 +4,7 @@ import { drainTileWork } from '../../utils/tileWorkQueue'
 import { loadSplatLayers } from '../../utils/splatLayerLoader'
 import { initHousingTextures } from '../../utils/housing-textures'
 import { loadFlowerColorTexture } from '../../shaders/grass-material'
-import { shouldUseMobileRenderBudget } from '../../stores/graphicsSettings'
+import type { GraphicsPreset } from '../../stores/graphicsSettings'
 import type { TerrainHeightManager } from '../../managers/terrainHeightManager'
 import type GameSceneGrassLayer from './GameSceneGrassLayer.svelte'
 import type GameSceneHousingLayer from './GameSceneHousingLayer.svelte'
@@ -16,6 +16,7 @@ export interface AssetBootstrapDeps {
   playerPosition: { x: number; z: number } | null
   grassLayerRef: GameSceneGrassLayer | undefined
   housingLayerRef: GameSceneHousingLayer | undefined
+  graphicsPreset: GraphicsPreset
 }
 
 function nextFrame(): Promise<void> {
@@ -33,8 +34,8 @@ export async function bootstrapSceneAssets(
     playerPosition,
     grassLayerRef,
     housingLayerRef,
+    graphicsPreset,
   } = deps
-  const mobileRenderBudget = shouldUseMobileRenderBudget()
 
   // Pre-fetch all tile heightmaps so they're cached when the TerrainLayer
   // $effect fires. This allows work items to be enqueued immediately.
@@ -68,9 +69,9 @@ export async function bootstrapSceneAssets(
   await nextFrame()
   await nextFrame()
 
-  drainTileWork(mobileRenderBudget ? 2 : Infinity)
+  drainTileWork(graphicsPreset.initialTileWorkDrainCount)
 
-  if (!mobileRenderBudget) {
+  if (graphicsPreset.warmupScenePipelines) {
     // Preallocate all grass slots + seed dummy blades below world so
     // every compute/render pipeline compiles under the loading dialog
     // instead of stalling mid-movement when a new sub-chunk activates.

@@ -106,6 +106,7 @@ export function createWaterMaterial(
   const causticsTex = texture(options.causticsMap)
   const refractionTex = texture(options.refractionMap ?? waterFallbackTex)
   const reflectionTex = texture(options.reflectionMap ?? waterFallbackTex)
+  const refractionMixScale = float(options.refractionMap ? 1 : 0)
   const wetnessMapTex = texture(options.wetnessMap ?? waterWetnessFallbackTex)
   const splatMapTex = texture(options.splatMap ?? waterSplatFallbackTex)
   const noiseTex = texture(getNoiseTexture())
@@ -178,6 +179,7 @@ export function createWaterMaterial(
     const mixFactor = float(1)
       .sub(smoothstep(float(0.05), float(0.35), depthFactor))
       .mul(0.95)
+      .mul(refractionMixScale)
     return { color, mixFactor }
   }
 

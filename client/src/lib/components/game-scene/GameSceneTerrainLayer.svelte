@@ -20,7 +20,6 @@
   import { loadSplatLayers, buildSplatAtlas } from '../../utils/splatLayerLoader'
   import type { SplatAtlasSet } from '../../utils/splatLayerLoader'
   import { mapEditorMode, gridVisible } from '../../stores/debugStore'
-  import { shouldUseIphoneRenderBudget } from '../../stores/graphicsSettings'
   import {
     brushWorldPos,
     brushSize,
@@ -38,6 +37,7 @@
     heightManager?: TerrainHeightManager | null
     splatManager?: TerrainSplatManager | null
     syncTileMeshes?: () => void
+    terrainMaterialPrecompilePoolSize?: number
     renderer?: WebGPURenderer | null
     camera?: THREE.Camera | null
   }
@@ -50,6 +50,7 @@
     heightManager = null,
     splatManager = null,
     syncTileMeshes = $bindable<() => void>(() => {}),
+    terrainMaterialPrecompilePoolSize = 8,
     renderer = null,
     camera = null,
   }: Props = $props()
@@ -79,7 +80,6 @@
   // Track whether editor overlay is compiled into materials.
   // Starts false for faster initial pipeline compilation; upgraded on first editor use.
   let editorOverlayCompiled = false
-  const iphoneRenderBudget = shouldUseIphoneRenderBudget()
 
   // ── Material + Geometry pools (created on demand, reused across tile lifecycles) ──
   const materialPool: THREE.Material[] = []
@@ -102,19 +102,18 @@
   // hitch. We preseed the pool with enough materials+geometries to cover tile
   // cycling, then precompile them for every render target (main, refraction,
   // reflection) before they're ever needed.
-  const PRECOMPILE_POOL_SIZE = 8
   const precompileScene = new THREE.Scene()
   let poolPrecompiled = false
 
   async function preseedAndPrecompilePool() {
     if (poolPrecompiled) return
     if (!renderer || !camera || !terrainGeometry) return
-    if (!iphoneRenderBudget && (!defaultAtlas || !_defaultLayers)) return
+    if (!defaultAtlas || !_defaultLayers) return
     poolPrecompiled = true
 
     // Preseed pool with N ready-to-use material+geometry pairs.
     const twins: THREE.Mesh[] = []
-    const poolSize = iphoneRenderBudget ? 1 : PRECOMPILE_POOL_SIZE
+    const poolSize = Math.max(1, terrainMaterialPrecompilePoolSize)
     for (let i = 0; i < poolSize; i++) {
       const mat = createDefaultMaterial()
       const geo = terrainGeometry.clone()

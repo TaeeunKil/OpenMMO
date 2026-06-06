@@ -2,18 +2,67 @@ import { writable, derived, get } from 'svelte/store'
 import { refractionEnabled, reflectionEnabled } from './debugStore'
 
 export type QualityLevel = 'high' | 'medium' | 'low'
+export type RenderBudget = 'full' | 'mobile'
 
 export interface GraphicsPreset {
+  renderBudget: RenderBudget
   pixelRatioCap: number
   shadowMapSize: number
   antialias: boolean
   refraction: boolean
   reflection: boolean
   grassDensity: number
+  enableDirectionalShadows: boolean
+  enableWaterLayer: boolean
+  enableWaterEffects: boolean
+  enableGrassLayer: boolean
+  enableTreeLayer: boolean
+  enableWindParticles: boolean
+  enableHousingLayer: boolean
+  enableTorchEffects: boolean
+  terrainQueueDrainTilesBeforeStagger: number
+  terrainTileWorkPerFrame: number | undefined
+  terrainMaterialPrecompilePoolSize: number
+  initialTerrainQueueDrainCount: number
+  initialTileWorkDrainCount: number
+  warmupScenePipelines: boolean
+  worldMapDefaultZoomSpan: number
+  worldMapMaxZoomSpan: number
+  worldMapImageCacheLimit: number
 }
+
+const FULL_RENDER_SETTINGS = {
+  renderBudget: 'full',
+  enableDirectionalShadows: true,
+  enableWaterLayer: true,
+  enableWaterEffects: true,
+  enableGrassLayer: true,
+  enableTreeLayer: true,
+  enableWindParticles: true,
+  enableHousingLayer: true,
+  enableTorchEffects: true,
+  terrainQueueDrainTilesBeforeStagger: Infinity,
+  terrainTileWorkPerFrame: undefined,
+  terrainMaterialPrecompilePoolSize: 8,
+  initialTerrainQueueDrainCount: Infinity,
+  initialTileWorkDrainCount: Infinity,
+  warmupScenePipelines: true,
+  worldMapDefaultZoomSpan: 8,
+  worldMapMaxZoomSpan: 32,
+  worldMapImageCacheLimit: Infinity,
+} satisfies Omit<
+  GraphicsPreset,
+  | 'pixelRatioCap'
+  | 'shadowMapSize'
+  | 'antialias'
+  | 'refraction'
+  | 'reflection'
+  | 'grassDensity'
+>
 
 const PRESETS: Record<QualityLevel, GraphicsPreset> = {
   high: {
+    ...FULL_RENDER_SETTINGS,
     pixelRatioCap: 2.0,
     shadowMapSize: 4096,
     antialias: true,
@@ -22,6 +71,7 @@ const PRESETS: Record<QualityLevel, GraphicsPreset> = {
     grassDensity: 1.0,
   },
   medium: {
+    ...FULL_RENDER_SETTINGS,
     pixelRatioCap: 1.5,
     shadowMapSize: 2048,
     antialias: false,
@@ -30,6 +80,7 @@ const PRESETS: Record<QualityLevel, GraphicsPreset> = {
     grassDensity: 1.0,
   },
   low: {
+    ...FULL_RENDER_SETTINGS,
     pixelRatioCap: 1.0,
     shadowMapSize: 1024,
     antialias: false,
@@ -45,11 +96,11 @@ const STORAGE_KEY_APPLIED_AA = 'onlinerpg_appliedAA'
 // Device render budgets are constant for the session, so compute each once and
 // cache it. They're read on hot paths (grass streaming, graphics-quality changes)
 // where re-running matchMedia/UA-regex per call would be wasted work.
-let _mobileRenderBudget: boolean | undefined
-let _iphoneRenderBudget: boolean | undefined
+let _mobileBudgetDetected: boolean | undefined
+let _renderBudget: RenderBudget | undefined
 
-export function shouldUseMobileRenderBudget(): boolean {
-  if (_mobileRenderBudget !== undefined) return _mobileRenderBudget
+function detectMobileRenderBudget(): boolean {
+  if (_mobileBudgetDetected !== undefined) return _mobileBudgetDetected
   if (typeof window === 'undefined') return false
 
   const coarsePointer =
@@ -57,13 +108,13 @@ export function shouldUseMobileRenderBudget(): boolean {
   const narrowViewport = Math.min(window.innerWidth, window.innerHeight) <= 600
   const touchDevice = navigator.maxTouchPoints > 0
 
-  _mobileRenderBudget = touchDevice && (coarsePointer || narrowViewport)
-  return _mobileRenderBudget
+  _mobileBudgetDetected = touchDevice && (coarsePointer || narrowViewport)
+  return _mobileBudgetDetected
 }
 
-export function shouldUseIphoneRenderBudget(): boolean {
-  if (_iphoneRenderBudget !== undefined) return _iphoneRenderBudget
-  if (typeof window === 'undefined') return false
+export function getDeviceRenderBudget(): RenderBudget {
+  if (_renderBudget !== undefined) return _renderBudget
+  if (typeof window === 'undefined') return 'full'
 
   const ua = navigator.userAgent
   const explicitIphone = /\biPhone\b/.test(ua)
@@ -71,19 +122,40 @@ export function shouldUseIphoneRenderBudget(): boolean {
     navigator.maxTouchPoints > 0 &&
     Math.min(window.innerWidth, window.innerHeight) <= 430
 
-  _iphoneRenderBudget = explicitIphone || tinyTouchViewport
-  return _iphoneRenderBudget
+  _renderBudget =
+    detectMobileRenderBudget() || explicitIphone || tinyTouchViewport
+      ? 'mobile'
+      : 'full'
+  return _renderBudget
 }
 
 function getMobileSafePreset(preset: GraphicsPreset): GraphicsPreset {
   return {
     ...preset,
+    renderBudget: 'mobile',
     pixelRatioCap: Math.min(preset.pixelRatioCap, 1.0),
     shadowMapSize: Math.min(preset.shadowMapSize, 1024),
     antialias: false,
     refraction: false,
     reflection: false,
     grassDensity: Math.min(preset.grassDensity, 0.5),
+    enableDirectionalShadows: false,
+    enableWaterLayer: true,
+    enableWaterEffects: false,
+    enableGrassLayer: false,
+    enableTreeLayer: false,
+    enableWindParticles: false,
+    enableHousingLayer: false,
+    enableTorchEffects: false,
+    terrainQueueDrainTilesBeforeStagger: Infinity,
+    terrainTileWorkPerFrame: 1,
+    terrainMaterialPrecompilePoolSize: 1,
+    initialTerrainQueueDrainCount: 1,
+    initialTileWorkDrainCount: 2,
+    warmupScenePipelines: false,
+    worldMapDefaultZoomSpan: 2,
+    worldMapMaxZoomSpan: 4,
+    worldMapImageCacheLimit: 32,
   }
 }
 
@@ -137,11 +209,17 @@ graphicsQuality.subscribe((level) => {
   reflectionEnabled.set(preset.reflection)
 })
 
+// Device budget and base presets are constant for the session, so the effective
+// preset is a pure function of `level`. Cache it — `getCurrentPreset()` is read
+// on hot paths (grass streaming) where re-spreading the mobile-safe object per
+// call would be wasted allocation.
+const _effectivePresetCache: Partial<Record<QualityLevel, GraphicsPreset>> = {}
+
 export function getEffectivePreset(level: QualityLevel): GraphicsPreset {
-  const preset = PRESETS[level]
-  return shouldUseMobileRenderBudget() || shouldUseIphoneRenderBudget()
-    ? getMobileSafePreset(preset)
-    : preset
+  return (_effectivePresetCache[level] ??=
+    getDeviceRenderBudget() === 'mobile'
+      ? getMobileSafePreset(PRESETS[level])
+      : PRESETS[level])
 }
 
 export function getCurrentPreset(): GraphicsPreset {

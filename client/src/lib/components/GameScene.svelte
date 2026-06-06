@@ -98,7 +98,7 @@
   import { initScene } from './game-scene/scene-init'
   import { createMultiPassRenderer } from './game-scene/multi-pass-rendering'
   import { OFFSCREEN_Y } from '../utils/house-geo-utils'
-  import { graphicsQuality, getEffectivePreset, shouldUseIphoneRenderBudget, shouldUseMobileRenderBudget } from '../stores/graphicsSettings'
+  import { graphicsQuality, getEffectivePreset } from '../stores/graphicsSettings'
 
   interface Props {
     serverUrl: string
@@ -176,7 +176,7 @@
   let playerAttackDuration = $state(1.533) // Default from slash1 animation (data/animation_durations.json)
 
   const multiPassRenderer = createMultiPassRenderer()
-  const iphoneRenderBudget = shouldUseIphoneRenderBudget()
+  const graphicsPreset = $derived(getEffectivePreset($graphicsQuality))
 
   // Track whether all initial data is loaded (terrain + splat + grass assets).
   // The loading dialog stays until frames render smoothly (pipeline compilation
@@ -272,7 +272,7 @@
   })
 
   $effect(() => {
-    applyGraphicsPreset(renderer, getEffectivePreset($graphicsQuality), directionalLight)
+    applyGraphicsPreset(renderer, graphicsPreset, directionalLight)
   })
 
   const calendarSystem = createCalendarSystem({
@@ -388,10 +388,10 @@
         playerControl.updatePlayerMovement(deltaTime)
       }
       tileManager.updateFromPlayerPosition(currentPlayer?.position ?? null)
-      if (!iphoneRenderBudget || terrainTiles.length < 2) {
+      if (terrainTiles.length < graphicsPreset.terrainQueueDrainTilesBeforeStagger) {
         tileManager.drainQueue()
       }
-      drainTileWork(iphoneRenderBudget ? 1 : undefined)
+      drainTileWork(graphicsPreset.terrainTileWorkPerFrame)
       syncTileMeshes()
       // Finalize teleport once full 3x3 heightmap grid is loaded
       if ($teleportLoading && currentPlayer &&
@@ -717,7 +717,7 @@
     })
 
     const sceneRes = initScene(renderer, scene, viewportSize.width, viewportSize.height, {
-      skipWaterEffects: iphoneRenderBudget,
+      skipWaterEffects: !graphicsPreset.enableWaterEffects,
     })
     terrainGeometry = sceneRes.terrainGeometry
     waterNormalMap = sceneRes.waterNormalMap
@@ -728,15 +728,15 @@
     reflectionManager = sceneRes.reflectionManager
     reflectionTexture = sceneRes.reflectionTexture
 
-    const mobileRenderBudget = shouldUseMobileRenderBudget()
-
     // Desktop loads all terrain tiles immediately. Mobile staggers the initial
     // tile mount to avoid WebGPU memory spikes while the world is preparing.
     tileManager.rebuild(terrainCenterChunk.x, terrainCenterChunk.z)
-    if (mobileRenderBudget) {
-      tileManager.drainQueue()
-    } else {
+    if (graphicsPreset.initialTerrainQueueDrainCount === Infinity) {
       tileManager.drainAll()
+    } else {
+      for (let i = 0; i < graphicsPreset.initialTerrainQueueDrainCount; i++) {
+        tileManager.drainQueue()
+      }
     }
 
     bootstrapSceneAssets({
@@ -744,8 +744,9 @@
       terrainTiles,
       heightManager: terrainHeightManager,
       playerPosition: currentPlayer?.position ?? null,
-      grassLayerRef: iphoneRenderBudget ? undefined : grassLayerRef,
-      housingLayerRef: iphoneRenderBudget ? undefined : housingLayerRef,
+      grassLayerRef: graphicsPreset.enableGrassLayer ? grassLayerRef : undefined,
+      housingLayerRef: graphicsPreset.enableHousingLayer ? housingLayerRef : undefined,
+      graphicsPreset,
     }).then(() => {
       // Mark data as ready. Threlte's render loop compiles WebGPU pipelines
       // on-demand (synchronously per frame) under the loading dialog overlay.
@@ -834,7 +835,7 @@
   bind:ref={directionalLight}
   position={[10, 10, 10]}
   intensity={SUN_MAX_INTENSITY}
-  castShadow={!iphoneRenderBudget}
+  castShadow={graphicsPreset.enableDirectionalShadows}
   shadow.bias={-0.0002}
   shadow.normalBias={0.15}
   shadow.mapSize.width={2048}
@@ -851,7 +852,7 @@
      existing material (~12s stall). Intensity 0 = invisible but pipelines
      are compiled with shadow support. After compilation, move offscreen so
      the shadow frustum captures nothing (avoids 6× cube-face renders/frame). -->
-{#if !iphoneRenderBudget}
+{#if graphicsPreset.enableTorchEffects}
   <T.PointLight
     bind:ref={placeholderShadowLight}
     position={isSceneCompiling ? [0, 0, 0] : [0, OFFSCREEN_Y, 0]}
@@ -874,35 +875,44 @@
   bind:syncTileMeshes={syncTileMeshes}
   heightManager={terrainHeightManager}
   splatManager={terrainSplatManager}
+  terrainMaterialPrecompilePoolSize={graphicsPreset.terrainMaterialPrecompilePoolSize}
   {renderer}
   {camera}
 />
 
-{#if !iphoneRenderBudget}
+{#if graphicsPreset.enableHousingLayer}
   <GameSceneHousingLayer
     bind:this={housingLayerRef}
     playerPosition={currentPlayer?.position ?? null}
   />
+{/if}
 
+{#if graphicsPreset.enableGrassLayer}
   <GameSceneGrassLayer
     bind:this={grassLayerRef}
     {terrainTiles}
     grassDataManager={terrainGrassDataManager}
     playerPosition={currentPlayer?.position ?? null}
   />
+{/if}
 
+{#if graphicsPreset.enableTreeLayer}
   <GameSceneTreeLayer
     bind:this={treeLayerRef}
     {terrainTiles}
     treeDataManager={terrainTreeDataManager}
     playerPosition={currentPlayer?.position ?? null}
   />
+{/if}
 
+{#if graphicsPreset.enableWindParticles}
   <GameSceneWindParticles
     bind:this={windParticlesRef}
     playerPosition={currentPlayer?.position ?? null}
   />
+{/if}
 
+{#if graphicsPreset.enableWaterLayer}
   <GameSceneWaterLayer
     bind:this={waterLayerRef}
     {terrainGeometry}
@@ -956,7 +966,7 @@
     groundItemMeshes={groundItemsLayerRef?.getGroup() ? [groundItemsLayerRef.getGroup()!] : []}
     {monsterModels}
     {playerAttackDuration}
-    torchEffectsDisabled={iphoneRenderBudget}
+    torchEffectsDisabled={!graphicsPreset.enableTorchEffects}
     heightManager={terrainHeightManager}
     onStateChange={handlePlayerStateChange}
     onAttackDuration={(duration) => (playerAttackDuration = duration)}
