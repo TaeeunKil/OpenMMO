@@ -17,6 +17,7 @@
     selectedRoomIndex,
     deleteSelectedRoom,
     flattenSelectedRoomTerrain,
+    reinstallSelectedHouse,
     WALL_VARIANT_OPTIONS,
     type RoomTemplate,
     type HousingEditorTool,
@@ -60,6 +61,7 @@
   let editHouseId = $state<string | null>(null)
   let editRoomIdx = $state<number | null>(null)
   let editVersion = $state(0)
+  let reinstalling = $state(false)
 
   // Derived: the room being edited (editVersion forces recompute after local edits)
   let editRoom = $derived.by(() => {
@@ -181,6 +183,16 @@
       }
     })
   }
+
+  async function onReinstallHouse() {
+    if (!reinstallSelectedHouse || reinstalling) return
+    reinstalling = true
+    try {
+      await reinstallSelectedHouse()
+    } finally {
+      reinstalling = false
+    }
+  }
 </script>
 
 <div class="editor-mode-badge">
@@ -207,6 +219,11 @@
             onclick={() => flattenSelectedRoomTerrain?.()}
           >Flatten</button>
         {/if}
+        <button
+          class="tool-btn tool-reinstall"
+          onclick={onReinstallHouse}
+          disabled={reinstalling}
+        >{reinstalling ? 'Reinstalling...' : 'Reinstall'}</button>
         <button
           class="tool-btn tool-delete"
           onclick={() => deleteSelectedRoom?.()}
@@ -462,6 +479,21 @@
 
   .tool-flatten:hover {
     background: rgba(255, 200, 60, 0.3);
+  }
+
+  .tool-reinstall {
+    background: rgba(90, 190, 220, 0.15);
+    border-color: rgba(90, 190, 220, 0.5);
+    color: #5fcbe6;
+  }
+
+  .tool-reinstall:hover:not(:disabled) {
+    background: rgba(90, 190, 220, 0.3);
+  }
+
+  .tool-reinstall:disabled {
+    cursor: wait;
+    opacity: 0.6;
   }
 
   .tool-delete {

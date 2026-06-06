@@ -147,6 +147,14 @@ export function setFlattenSelectedRoomTerrain(fn: (() => void) | null) {
   flattenSelectedRoomTerrain = fn
 }
 
+// Callback for reapplying terrain/vegetation cleanup for the selected house
+export let reinstallSelectedHouse: (() => void | Promise<void>) | null = null
+export function setReinstallSelectedHouse(
+  fn: (() => void | Promise<void>) | null
+) {
+  reinstallSelectedHouse = fn
+}
+
 // Selection state for edit mode
 export const selectedHouseId = writable<string | null>(null)
 export const selectedRoomIndex = writable<number | null>(null)
