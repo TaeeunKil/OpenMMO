@@ -269,6 +269,10 @@
     border-color: #4299e1;
   }
 
+  .chat-input input::placeholder {
+    color: #718096;
+  }
+
   .chat-input input:disabled {
     opacity: 0.5;
   }

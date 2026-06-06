@@ -176,4 +176,19 @@
     background: rgba(80, 80, 80, 0.95);
     color: #fff;
   }
+
+  @media (max-width: 768px), (max-height: 520px) and (pointer: coarse) {
+    .corner-actions {
+      right: max(12px, env(safe-area-inset-right));
+      bottom: max(12px, env(safe-area-inset-bottom));
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .corner-btn {
+      width: 44px;
+      height: 44px;
+      padding: 10px;
+    }
+  }
 </style>

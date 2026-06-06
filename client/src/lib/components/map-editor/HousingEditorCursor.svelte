@@ -110,9 +110,8 @@
   ): Rect[] {
     const rects: Rect[] = []
     for (const h of housingManager.getAllHouses()) {
-      for (const r of h.rooms) {
+      for (const r of groundFloorRooms(h)) {
         if (exclude?.(h, r)) continue
-        if (r.floorLevel !== 0 || r.roomType === 'stairwell') continue
         const rx = h.origin.x + r.localX
         const rz = h.origin.z + r.localZ
         rects.push({ minX: rx, minZ: rz, maxX: rx + r.sizeX, maxZ: rz + r.sizeZ })
@@ -587,14 +586,9 @@
 
         // Re-remove grass under remaining 1F rooms
         for (const h of housingManager.getAllHouses()) {
-          for (const room of h.rooms) {
-            if (room.floorLevel !== 0 || room.roomType === 'stairwell') continue
-            const rx = h.origin.x + room.localX
-            const rz = h.origin.z + room.localZ
-            const rMinX = rx - GRASS_MARGIN
-            const rMinZ = rz - GRASS_MARGIN
-            const rMaxX = rx + room.sizeX + GRASS_MARGIN
-            const rMaxZ = rz + room.sizeZ + GRASS_MARGIN
+          for (const room of groundFloorRooms(h)) {
+            const { minX: rMinX, minZ: rMinZ, maxX: rMaxX, maxZ: rMaxZ } =
+              roomGrassRect(h, room)
             // Only process if overlapping the restored grass area
             if (
               rMinX > grassMaxX ||
