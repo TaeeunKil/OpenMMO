@@ -16,10 +16,12 @@
 mod bake;
 mod inspect;
 mod preview;
+mod prune_house_trees;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use onlinerpg_shared::worldgen::WorldGenConfig;
+use prune_house_trees::PruneOptions;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -257,6 +259,29 @@ enum Cmd {
         )]
         at: Vec<String>,
     },
+
+    /// Remove baked tree instances that overlap persisted house footprints.
+    PruneHouseTrees {
+        /// Terrain directory containing `trees/`.
+        #[arg(long, default_value = "data/terrain")]
+        terrain: PathBuf,
+
+        /// Housing directory containing chunk folders and house JSON files.
+        #[arg(long, default_value = "data/housing")]
+        housing: PathBuf,
+
+        /// Extra margin around each ground-floor room footprint.
+        #[arg(long, default_value_t = 2.0)]
+        margin: f32,
+
+        /// Print what would change without writing tree files.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Print loaded houses and their ground-floor prune footprints.
+        #[arg(long)]
+        list_houses: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -313,5 +338,18 @@ fn main() -> Result<()> {
             }
             inspect::probe(&cfg, &points)
         }
+        Cmd::PruneHouseTrees {
+            terrain,
+            housing,
+            margin,
+            dry_run,
+            list_houses,
+        } => prune_house_trees::run(PruneOptions {
+            terrain,
+            housing,
+            margin,
+            dry_run,
+            list_houses,
+        }),
     }
 }
