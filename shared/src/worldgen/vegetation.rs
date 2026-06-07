@@ -18,6 +18,10 @@
 //! well so that the runtime and the baker stay aligned on inputs.
 
 use super::tile_bake::{HEIGHT_BIAS, HEIGHT_STEP, TILE_DIM, VERTS_PER_SIDE};
+use crate::tree_format::{
+    TREE_EXCLUSION_RADIUS, TREE_V1_BYTES_PER_INSTANCE, TREE_V1_HEADER_BYTES, TREE_V1_MAGIC,
+    TREE_V1_SCALE,
+};
 
 #[inline]
 fn decode_height(v: u16) -> f32 {
@@ -163,10 +167,6 @@ fn tile_min_world(t: i32) -> f32 {
 // Trees (V1 format).
 // ==================================================================
 
-const TREE_V1_MAGIC: u32 = 0x5452_3031; // "TR01"
-const TREE_V1_HEADER_BYTES: usize = 12;
-const TREE_V1_BYTES_PER_INSTANCE: usize = 6;
-
 /// Per-cell probability that a grass cell (vegMeta 230–249) tries to spawn a
 /// tree. Lowered from the client-runtime value of 0.08 because the bake now
 /// covers the whole world — the runtime value was tuned when only visited
@@ -179,11 +179,6 @@ const TREE_PROBABILITY: f64 = 0.025;
 /// here keeps the sparse fringe cells grass-only so trees don't push right
 /// up against the bank.
 const TREE_MIN_DENSITY: u8 = 4;
-
-/// `[(scaleMin, scaleRange)]` — slot 0 is `tree.glb`, slot 1 is `tree2.glb`.
-/// Must match `TREE_SCALE` in `tree-data.ts` so quantized `scale` bytes
-/// decode to the same world-space size range on the client.
-const TREE_SCALE: [(f32, f32); 2] = [(0.7, 2.3), (0.6, 0.8)];
 
 /// Exclusion rectangle in world-space meters: `[min_x, min_z, max_x, max_z]`.
 /// Currently only used when baking over an already-laid housing footprint —
@@ -239,7 +234,7 @@ pub fn bake_trees(
             let rotation = (rng.next_f64() as f32) * std::f32::consts::TAU;
             let is_tree1 = rng.next_f64() < 0.5;
             let slot = if is_tree1 { 0 } else { 1 };
-            let (scale_min, scale_range) = TREE_SCALE[slot];
+            let (scale_min, scale_range) = TREE_V1_SCALE[slot];
             let scale = scale_min + (rng.next_f64() as f32) * scale_range;
 
             if !exclusion_rects.is_empty() {
@@ -270,10 +265,6 @@ pub fn bake_trees(
     encode_tree_v1(&tree1, &tree2)
 }
 
-/// Base exclusion radius at scale 1.0, per tree type. Must match
-/// `TREE_EXCLUSION_RADIUS` in `tree-data.ts`.
-const TREE_EXCLUSION_RADIUS: [f32; 2] = [2.0, 1.5];
-
 fn encode_tree_v1(tree1: &[(f32, f32, f32, f32)], tree2: &[(f32, f32, f32, f32)]) -> Vec<u8> {
     let total = tree1.len() + tree2.len();
     let mut out = Vec::with_capacity(TREE_V1_HEADER_BYTES + total * TREE_V1_BYTES_PER_INSTANCE);
@@ -285,7 +276,7 @@ fn encode_tree_v1(tree1: &[(f32, f32, f32, f32)], tree2: &[(f32, f32, f32, f32)]
     let rot_scale = 255.0 / std::f32::consts::TAU;
 
     for (slot, list) in [tree1, tree2].iter().enumerate() {
-        let (scale_min, scale_range) = TREE_SCALE[slot];
+        let (scale_min, scale_range) = TREE_V1_SCALE[slot];
         let scale_scale = 255.0 / scale_range;
         for &(lx, lz, rot, scale) in list.iter() {
             let px = (lx * pos_scale).round().clamp(0.0, 65535.0) as u16;

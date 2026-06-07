@@ -1,13 +1,11 @@
 use std::io;
 
 use crate::{coords, io::TerrainIO};
+use onlinerpg_shared::tree_format::{
+    TREE_V1_BYTES_PER_INSTANCE, TREE_V1_HEADER_BYTES, TREE_V1_MAGIC,
+};
 
 const TILE_SIZE: f32 = crate::defaults::TILE_DIM as f32;
-// V1 tree wire format — keep in sync with the client decoder in
-// `client/src/lib/utils/tree-data.ts`.
-const TREE_V1_MAGIC: u32 = 0x5452_3031; // "TR01"
-const TREE_V1_HEADER_BYTES: usize = 12;
-const TREE_V1_BYTES_PER_INSTANCE: usize = 6;
 
 /// Axis-aligned exclusion rect [min_x, min_z, max_x, max_z] in world coords.
 pub type TreeExclusionRect = [f32; 4];

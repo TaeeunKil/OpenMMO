@@ -11,6 +11,7 @@ pub mod inventory;
 pub mod messages;
 pub mod monster_ai;
 pub mod pathfinding;
+pub mod tree_format;
 pub mod world;
 pub mod worldgen;
 pub mod xp;

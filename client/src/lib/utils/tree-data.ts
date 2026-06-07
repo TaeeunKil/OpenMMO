@@ -5,6 +5,10 @@
  *   [u32 magic=0x54523031] [u32 tree1Count] [u32 tree2Count]
  *   [N × { u16 localX, u16 localZ, u8 rotation, u8 scale }]
  *   12-byte header + 6 bytes per instance.
+ *   Altitude/Y is not stored; decode re-samples the tile heightmap.
+ *
+ * Rust source of truth for V1 constants:
+ *   shared/src/tree_format.rs
  *
  * In-memory representation (TreePlacementData.buffer):
  *   [u32 tree1Count] [u32 tree2Count]
