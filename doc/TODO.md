@@ -26,7 +26,7 @@
   - [x] 풀과 꽃 배치
   - [x] 나무 배치
   - 동물 배치 
-- 강물을 구현한다
+- [x] 강물을 구현한다
 - [x] 바다를 구현한다
 - 배를 구현한다
 - [x] Blood and Bronze (1)은 전투중에 틀게
@@ -34,7 +34,7 @@
 - [x] 건물 벽에 나무로 된 기둥 표시. 대각선 이나 X자 모양
 - [x] 건물 뒤로 들어가면 건물이 안보이게
 - [x] 일정 시간 마다 유저 위치 저장
-- 인벤토리 시스템
+- [x] 인벤토리 시스템
 - [x] 몬스터 벽 뚫고 가지 못하게
   - [x] A* 길찾기
 - [x] npc 출퇴근
@@ -42,7 +42,7 @@
 - 아이템 enchant 시스템
 - 장비한 갑옷에 따른 외형 변화
 - [x] chatting tab for combat log
-- change name of scp939
+- [x] change name of scp939
 - go straight if there is no obstacle
 - [x] don't equip sword if she is a merchant
 - [x] equip spear if he is a guard
@@ -50,6 +50,9 @@
 - animation for spear
 - sign of shops
 - 꽃들만 모여 있는 구역
+- 멀리 떨어진데서 아이템 클릭하면 줍는 동작은 하는데 주워지지는 않음
+- healing potion
+- 몬스터가 도망칠 때는 적어도 화면 밖까지
 
 # 폐지
 
