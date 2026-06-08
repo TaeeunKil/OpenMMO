@@ -13,6 +13,11 @@
       "maxDistance": 60
     },
     {
+      "monsterType": "kobold",
+      "maxPerPlayer": 6,
+      "maxDistance": 60
+    },
+    {
       "monsterType": "orc",
       "maxPerPlayer": 4,
       "maxDistance": 60
