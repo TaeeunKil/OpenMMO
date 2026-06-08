@@ -272,18 +272,23 @@ class InputHandler {
         true
       )
       if (itemHits.length > 0) {
-        const hitPoint = itemHits[0].point
         const pp = context.playerPosition
-        const dx = hitPoint.x - pp.x
-        const dz = hitPoint.z - pp.z
-        const distSq = dx * dx + dz * dz
         let obj: THREE.Object3D | null = itemHits[0].object
         while (obj) {
           if (obj.userData && obj.userData.groundItemId != null) {
+            const itemPosition = new THREE.Vector3()
+            obj.getWorldPosition(itemPosition)
+            const dx = itemPosition.x - pp.x
+            const dz = itemPosition.z - pp.z
+            const distSq = dx * dx + dz * dz
             return {
               type: 'pickup_ground_item',
               instanceId: obj.userData.groundItemId as number,
-              position: { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z },
+              position: {
+                x: itemPosition.x,
+                y: itemPosition.y,
+                z: itemPosition.z,
+              },
               distance: Math.sqrt(distSq),
             }
           }

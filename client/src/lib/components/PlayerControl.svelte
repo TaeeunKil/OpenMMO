@@ -125,6 +125,7 @@
   }
 
   let pendingPickupInstanceId = $state<number | null>(null)
+  let pendingPickupAfterMoveInstanceId = $state<number | null>(null)
 
   function finishPendingPickup() {
     const id = pendingPickupInstanceId
@@ -193,6 +194,7 @@
     currentSpeed = 0
     pathWaypoints = []
     currentWaypointIndex = 0
+    pendingPickupAfterMoveInstanceId = null
     if (standUpTimer) {
       clearTimeout(standUpTimer)
       standUpTimer = null
@@ -285,6 +287,7 @@
     const monsterData = monsterManager.monsters.get(monsterId)
     if (monsterData?.state === 'dead' || monsterData?.isDeadPending) return
 
+    pendingPickupAfterMoveInstanceId = null
     combatController.beginCombat(monsterId, true)
 
     // Ensure position sync
@@ -574,8 +577,14 @@
         return
       }
 
+      const pickupAfterArrival = pendingPickupAfterMoveInstanceId
       sendPlayerMove(movementTarget, playerRotation)
       stopMovement()
+
+      if (pickupAfterArrival !== null) {
+        enterPickup(pickupAfterArrival)
+        return
+      }
 
       if (combatController.isInCombat) {
         initiateAttack(combatController.targetMonsterId!)
@@ -637,10 +646,13 @@
     if (inputHandler.hasKeysPressed && movementTarget) {
       movementTarget = null
       movementState = null
+      pendingPickupAfterMoveInstanceId = null
       combatController.cancelCombat()
     }
 
     if (inputHandler.hasKeysPressed && combatController.isInCombat) {
+      // pendingPickupAfterMoveInstanceId is already null here: arming it always
+      // sets movementTarget, so the block above ran and cleared it.
       combatController.cancelCombat()
     }
 
@@ -716,14 +728,22 @@
     updatePlayerState(isMoving ? 100 : undefined)
   }
 
-  export function handleClickToMove(clickPosition: Position) {
+  export function handleClickToMove(
+    clickPosition: Position,
+    options: { pickupAfterArrival?: number | null } = {}
+  ) {
+    const pickupAfterArrival = options.pickupAfterArrival ?? null
+    if (pickupAfterArrival === null) {
+      pendingPickupAfterMoveInstanceId = null
+    }
+
     if (currentPlayer && currentPlayer.health <= 0) return
 
     // Stand up first when leaving object interaction
     if (playerState.state === 'interact') {
       if (playerState.interactionAnim === 'pickup') {
         exitPickupInteraction()
-        handleClickToMove(clickPosition)
+        handleClickToMove(clickPosition, options)
         return
       }
 
@@ -732,7 +752,7 @@
       if (standUpTimer) clearTimeout(standUpTimer)
       standUpTimer = setTimeout(() => {
         standUpTimer = null
-        handleClickToMove(clickPosition)
+        handleClickToMove(clickPosition, options)
       }, STAND_UP_DURATION)
       return
     }
@@ -790,6 +810,7 @@
     movementState = initMovementState(currentPos, wpPos, 0)
     movementTarget = wpPos
     isMoving = true
+    pendingPickupAfterMoveInstanceId = pickupAfterArrival
 
     sendPlayerMove(wpPos, playerRotation)
 
@@ -797,6 +818,7 @@
   }
 
   function enterInteraction(intent: Extract<ClickIntent, { type: 'interact_object' }>) {
+    pendingPickupAfterMoveInstanceId = null
     combatController.cancelCombat()
     isMoving = false
     movementTarget = null
@@ -827,7 +849,9 @@
 
   function enterPickup(instanceId: number) {
     if (playerState.state === 'dead') return
+    if (!groundItemManager.items.has(instanceId)) return
 
+    pendingPickupAfterMoveInstanceId = null
     groundItemManager.beginPickup(instanceId)
     pendingPickupInstanceId = instanceId
 
@@ -838,6 +862,15 @@
     currentSpeed = 0
 
     setPlayerState(buildPickupState(playerState))
+  }
+
+  function approachAndPickup(intent: Extract<ClickIntent, { type: 'pickup_ground_item' }>) {
+    if (playerState.state === 'dead') return
+
+    const target = groundItemManager.items.get(intent.instanceId)?.position ?? intent.position
+
+    combatController.cancelCombat()
+    handleClickToMove(target, { pickupAfterArrival: intent.instanceId })
   }
 
   function handleCanvasClickIntent(event: MouseEvent) {
@@ -870,16 +903,21 @@
         initiateAttack(monsterId)
         isMoving = false
         movementTarget = null
+        movementState = null
+        pathWaypoints = []
+        currentWaypointIndex = 0
       },
       chaseAndAttack: (monsterId, hitPoint) => {
         combatController.beginCombat(monsterId, false)
         handleClickToMove(hitPoint)
       },
       toggleDoor: (houseId, roomIndex, wallDir, segmentIndex) => {
+        pendingPickupAfterMoveInstanceId = null
         networkManager.sendToggleDoor(houseId, roomIndex, wallDir, segmentIndex)
       },
       enterInteraction,
       enterPickup,
+      approachAndPickup,
       moveToGround: (position) => {
         combatController.cancelCombat()
         handleClickToMove(position)

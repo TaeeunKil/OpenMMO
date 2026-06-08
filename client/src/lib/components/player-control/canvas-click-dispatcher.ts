@@ -1,9 +1,13 @@
 import type { Position } from '../../utils/movementUtils'
 import type { ClickIntent } from '../../managers/inputHandler'
 import type { WallDirection } from '../../utils/house-geometry'
-import { PLAYER_ATTACK_RANGE_METERS } from '../../data/combatTiming'
+import {
+  PLAYER_ATTACK_RANGE_METERS,
+  PLAYER_PICKUP_RANGE_METERS,
+} from '../../data/combatTiming'
 
 type InteractIntent = Extract<ClickIntent, { type: 'interact_object' }>
+type PickupIntent = Extract<ClickIntent, { type: 'pickup_ground_item' }>
 
 export interface CanvasClickActions {
   /** Player is at melee range — start the attack swing immediately. */
@@ -18,6 +22,7 @@ export interface CanvasClickActions {
   ): void
   enterInteraction(intent: InteractIntent): void
   enterPickup(instanceId: number): void
+  approachAndPickup(intent: PickupIntent): void
   moveToGround(position: Position): void
 }
 
@@ -48,7 +53,11 @@ export function dispatchCanvasClickIntent(
       actions.enterInteraction(intent)
       return
     case 'pickup_ground_item':
-      actions.enterPickup(intent.instanceId)
+      if (intent.distance <= PLAYER_PICKUP_RANGE_METERS) {
+        actions.enterPickup(intent.instanceId)
+      } else {
+        actions.approachAndPickup(intent)
+      }
       return
     case 'move_to_ground':
       actions.moveToGround(intent.position)
