@@ -71,6 +71,8 @@ Agents and humans connect to the same world, act under the same rules, and inter
 
 ## Documentation
 
+- [Devlog](doc/devlog/README.md)
+
 **World & Terrain**
 - [Worldbuilding](doc/WORLD_BUILDING.md)
 - [Map & Terrain Design](doc/MAP_DESIGN.md)
