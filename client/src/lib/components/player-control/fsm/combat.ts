@@ -13,7 +13,6 @@ import {
   buildAttackState,
   buildIdleAfterAttack,
 } from '../player-state-builders'
-import type { PathWaypoint } from './movement-substrate'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Chase target update
@@ -396,22 +395,6 @@ export function beginAttack({
     kind: 'started',
     nextPlayerState: buildAttackState(previousPlayerState),
     pendingPickupAfterMoveInstanceId: null,
-  }
-}
-
-export function resetAttackInRangeRuntime(): {
-  isMoving: false
-  movementTarget: null
-  movementState: null
-  pathWaypoints: PathWaypoint[]
-  currentWaypointIndex: 0
-} {
-  return {
-    isMoving: false,
-    movementTarget: null,
-    movementState: null,
-    pathWaypoints: [],
-    currentWaypointIndex: 0,
   }
 }
 

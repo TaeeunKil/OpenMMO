@@ -153,36 +153,6 @@ export function startClickMovement({
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Apply a started click movement to runtime state
-// ───────────────────────────────────────────────────────────────────────────
-
-export interface MovementStartRuntime {
-  pathWaypoints: PathWaypoint[]
-  currentWaypointIndex: number
-  movementState: MovementState
-  movementTarget: Position
-  playerRotation: number
-  isMoving: boolean
-  pendingPickupAfterMoveInstanceId: number | null
-  totalDistance: number
-}
-
-export function applyStartedClickMovement(
-  started: StartedClickMovement
-): MovementStartRuntime {
-  return {
-    pathWaypoints: started.pathWaypoints,
-    currentWaypointIndex: started.currentWaypointIndex,
-    movementState: started.movementState,
-    movementTarget: started.movementTarget,
-    playerRotation: started.playerRotation,
-    isMoving: true,
-    pendingPickupAfterMoveInstanceId: started.pendingPickupAfterMoveInstanceId,
-    totalDistance: started.movementState.totalDistance,
-  }
-}
-
-// ───────────────────────────────────────────────────────────────────────────
 // Full move-request flow (decision + click movement start)
 // ───────────────────────────────────────────────────────────────────────────
 

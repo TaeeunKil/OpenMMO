@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Position } from '../../../utils/movementUtils'
 import {
-  applyStartedClickMovement,
   decideMoveRequest,
   runMoveRequest,
   startClickMovement,
@@ -131,37 +130,6 @@ describe('startClickMovement', () => {
     expect(started.pathWaypoints).toEqual([{ x: 4, z: 5, floor: 2 }])
     expect(started.movementTarget).toEqual({ x: 4, y: 9, z: 5 })
     expect(started.pendingPickupAfterMoveInstanceId).toBe(42)
-  })
-})
-
-describe('applyStartedClickMovement', () => {
-  it('normalizes started movement into runtime state', () => {
-    const movementState = {
-      currentSpeed: 0,
-      startPos: { x: 0, y: 0, z: 0 },
-      targetPos: { x: 1, y: 0, z: 0 },
-      totalDistance: 1,
-    }
-
-    const runtime = applyStartedClickMovement({
-      pathWaypoints: [{ x: 1, z: 0, floor: 0 }],
-      currentWaypointIndex: 0,
-      movementState,
-      movementTarget: { x: 1, y: 0, z: 0 },
-      playerRotation: 1.57,
-      pendingPickupAfterMoveInstanceId: 5,
-    })
-
-    expect(runtime).toEqual({
-      pathWaypoints: [{ x: 1, z: 0, floor: 0 }],
-      currentWaypointIndex: 0,
-      movementState,
-      movementTarget: { x: 1, y: 0, z: 0 },
-      playerRotation: 1.57,
-      isMoving: true,
-      pendingPickupAfterMoveInstanceId: 5,
-      totalDistance: 1,
-    })
   })
 })
 

@@ -28,9 +28,16 @@
   adapter 함수로 내려갔다.
 - `client/src/lib/components/player-control/fsm/**`에 projection, movement substrate, keyboard/combat/movement
   frame, transition, runtime patch, state registry/overrides, machine, event dispatcher를 분리했다.
-- 현재 구현은 안전한 이식 단계다. 머신은 상태 lifecycle/event queue/상태별 handler를 제공하지만,
-  일부 런타임 값은 아직 Svelte adapter의 store/local state를 읽어 관측 상태명으로 동기화한다. 다음 단계에서
-  `PlayerControlContext`를 실제 런타임 컨테이너로 더 강하게 연결하면 상태 객체가 플래그를 더 직접 소유하게 된다.
+- **(완료, 방향 A)** 머신이 이제 상태를 직접 소유한다. 관망자 패턴(`resolveControlStateName`로 플래그에서
+  상태명을 역산 + 매 substep 폴링)을 제거하고, 어댑터가 실제 전이 지점에서 `machine.transition(state)`를
+  명시 호출한다. `isMoving` 플래그는 삭제되어 이제 `moving`/`keyboard_moving` 상태에 있다는 것과 동치다
+  (`isMovingNow()` 파생). 이동 데이터(target/movementState/A* waypoints/pendingPickupAfterMove)는
+  `moving` 상태가, 진행 중 줍기 id는 `picking_up` 상태가 **소유**한다(`control-state.ts`의 `ControlState`
+  유니온). 상태를 벗어나면 그 데이터가 사라지므로 수동 플래그 리셋과 `runtime-patch.ts`(5개 patch 빌더),
+  `applyRuntimePatch`/`applyRuntimeState`가 통째로 제거됐다. pickup-finish는 반응형 `$effect` 백스톱 대신
+  pickup을 떠나는 모든 전이에서 `finishPendingPickup()` 명시 호출로 대체됐다(L5). 브라우저 런타임 검증
+  가능 환경에서 단계별(Phase 0 관측 훅 → 1 명시 전이 → 2a isMoving 제거 → 2b 데이터 소유 → 3 정리)로
+  진행하며 스모크 + vitest로 검증했다.
 
 ## 이번 단계에서 보존할 외부 계약
 

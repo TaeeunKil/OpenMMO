@@ -10,7 +10,6 @@ import {
   applyCombatTickOutcome,
   beginAttack,
   ensureAttackState,
-  resetAttackInRangeRuntime,
   runCombatFrame,
   tickCombat,
   transitionAttackToIdle,
@@ -414,18 +413,6 @@ describe('beginAttack', () => {
     })
 
     expect(sendPlayerMove).not.toHaveBeenCalled()
-  })
-})
-
-describe('resetAttackInRangeRuntime', () => {
-  it('clears movement runtime after an in-range attack event', () => {
-    expect(resetAttackInRangeRuntime()).toEqual({
-      isMoving: false,
-      movementTarget: null,
-      movementState: null,
-      pathWaypoints: [],
-      currentWaypointIndex: 0,
-    })
   })
 })
 
