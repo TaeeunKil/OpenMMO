@@ -115,7 +115,6 @@
 
   // Movement system
   let movementTarget = $state<Position | null>(null)
-  let isMoving = $state(false)
   let movementState = $state<MovementState | null>(null)
   let lastSentPosition = $state<Position | null>(null)
 
@@ -247,7 +246,8 @@
   }
 
   function applyRuntimePatch(patch: PlayerControlRuntimePatch) {
-    if (patch.isMoving !== undefined) isMoving = patch.isMoving
+    // patch.isMoving is intentionally ignored: motion is now the moving state,
+    // not a stored flag. The owning transition is issued explicitly by callers.
     if (patch.movementTarget !== undefined) movementTarget = patch.movementTarget
     if (patch.movementState !== undefined) movementState = patch.movementState
     if (patch.currentSpeed !== undefined) currentSpeed = patch.currentSpeed
@@ -275,6 +275,10 @@
       clearTimeout(standUpTimer)
       standUpTimer = null
     }
+    // Settle into idle BEFORE emitting: the projection now derives 'moving' vs
+    // 'idle' from the machine's owned state, so the transition must precede the
+    // emit. arrive() overrides this with pickup/attack right after when needed.
+    transitionTo('idle')
     updatePlayerState()
   }
 
@@ -284,12 +288,11 @@
     playerControlMachine.transition(name)
   }
 
-  // Stop movement and settle into idle (blocked path, keyboard release-to-idle).
-  // Distinct from the bare stopMovement() used by arrive(), which then routes to
-  // pickup/attack/idle itself.
-  function stopMovementToIdle() {
-    stopMovement()
-    transitionTo('idle')
+  // `isMoving` is no longer a stored flag: being in motion IS being in the
+  // moving/keyboard_moving state. Derive it from the machine's owned state.
+  function isMovingNow(): boolean {
+    const name = playerControlMachine.stateName
+    return name === 'moving' || name === 'keyboard_moving'
   }
 
   // Wrapper for sending move packets to track last sent position
@@ -344,7 +347,7 @@
 
     const newState = projectPlayerState({
       currentPosition,
-      isMoving,
+      isMoving: isMovingNow(),
       currentSpeed,
       playerRotation,
       totalDistance,
@@ -446,19 +449,23 @@
   // avoids reallocating ~20 closures per frame on the render hot path.
   const combatTickActions = {
     stopMovingToIdle: () => {
-      if (isMoving) {
-        isMoving = false
+      if (isMovingNow()) {
         movementTarget = null
         movementState = null
+        // Transition before emit so the projection sees idle (chase -> idle).
+        transitionTo('idle')
         updatePlayerState()
       }
       transitionToIdle()
     },
     prepareReachedAttackRange: () => {
-      isMoving = false
       movementTarget = null
       movementState = null
       currentSpeed = 0
+      // Reached range stops movement; settle to idle before the emit. beginAttack
+      // (next, in the same outcome) transitions to attacking; if the target just
+      // died and beginAttack is ignored, we correctly remain idle.
+      transitionTo('idle')
       updatePlayerState()
     },
     beginAttack: initiateAttack,
@@ -470,7 +477,6 @@
       movementTarget = nextMovementTarget
       movementState = nextMovementState
       playerRotation = nextRotation
-      isMoving = true
       // Chase reports as 'moving' (playerState stays 'moving' while pathing to
       // the monster); the 'attacking' name is reserved for in-range swinging.
       transitionTo('moving')
@@ -491,7 +497,7 @@
   }
 
   const movementTickActions = {
-    stopMovement: stopMovementToIdle,
+    stopMovement,
     triggerJumpFeedback,
     setNextWaypoint: (
       nextCurrentSpeed: number,
@@ -510,8 +516,8 @@
       currentSpeed = nextCurrentSpeed
       playerRotation = nextPlayerRotation
       const pickupAfterArrival = pendingPickupAfterMoveInstanceId
-      // Bare stopMovement() here (not stopMovementToIdle): arrive routes to
-      // pickup/attack/idle itself below.
+      // stopMovement() settles to idle (and emits); the pickup/attack branches
+      // below override that state when arrival hands off to them.
       stopMovement()
 
       if (pickupAfterArrival !== null) {
@@ -521,10 +527,7 @@
 
       if (combatController.isInCombat) {
         initiateAttack(combatController.targetMonsterId!)
-        return
       }
-
-      transitionTo('idle')
     },
     continueMovement: (
       nextCurrentSpeed: number,
@@ -547,18 +550,16 @@
     },
     cancelCombat: () => combatController.cancelCombat(),
     markMoving: () => {
-      isMoving = true
       transitionTo('keyboard_moving')
     },
     setKeyboardIdleRuntime: () => {
-      isMoving = false
       currentSpeed = 0
       transitionTo('idle')
     },
     emitKeyboardPlayerState: () => {
-      updatePlayerState(isMoving ? 100 : undefined)
+      updatePlayerState(isMovingNow() ? 100 : undefined)
     },
-    stopMovement: stopMovementToIdle,
+    stopMovement,
     triggerJumpFeedback,
     setMoved: (nextCurrentSpeed: number, nextPlayerRotation: number) => {
       currentSpeed = nextCurrentSpeed
@@ -572,7 +573,7 @@
       deltaTime,
       currentPlayer,
       playerStateName: playerState.state,
-      isMoving,
+      isMoving: isMovingNow(),
       currentSpeed,
       movementTarget,
       movementState,
@@ -661,8 +662,10 @@
         const runtime = applyStartedClickMovement(started)
         const patch = createStartedMovementRuntimePatch(runtime)
         applyRuntimePatch(patch)
-        updatePlayerState(patch.totalDistance)
+        // Transition before emit: the projection derives 'moving' from the
+        // machine's owned state.
         transitionTo('moving')
+        updatePlayerState(patch.totalDistance)
       },
     }
   }
@@ -678,7 +681,7 @@
       pickupAfterArrival,
       currentPlayer,
       interactionExit: getInteractionExitKind(playerState),
-      isMoving,
+      isMoving: isMovingNow(),
       hasKeyboardInput: inputHandler.hasKeysPressed,
       currentFloor: Math.max(0, get(playerFloorLevel)),
       getFloorAt: passability_get_floor_at,
@@ -935,7 +938,7 @@
             : null
         },
         get isMoving() {
-          return isMoving
+          return isMovingNow()
         },
         get movementTarget() {
           return movementTarget
