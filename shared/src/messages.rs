@@ -74,6 +74,10 @@ pub enum ClientMessage {
     DebugDropItem {
         item_def_id: String,
     },
+    DebugSetTime {
+        hour: u8,
+        minute: u8,
+    },
     TorchToggle {
         enabled: bool,
     },

@@ -407,6 +407,10 @@ class NetworkManager {
     this.sendMessage({ DebugDropItem: { item_def_id: itemDefId } })
   }
 
+  sendDebugSetTime(hour: number, minute: number) {
+    this.sendMessage({ DebugSetTime: { hour, minute } })
+  }
+
   // Item instance ids are assigned by the server, so invalid ids must never
   // be sent back over inventory-related messages.
   private isNetworkableInstanceId(

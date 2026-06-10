@@ -631,6 +631,18 @@ async fn handle_client_message(
             }
         }
 
+        ClientMessage::DebugSetTime { hour, minute } => {
+            if state.player_id.is_some() {
+                let datetime = game_state.debug_set_time(hour, minute);
+                info!(
+                    "Debug time jump to {:04}-{:02}-{:02} {:02}:{:02}",
+                    datetime.year, datetime.month, datetime.day, datetime.hour, datetime.minute
+                );
+            } else {
+                warn!("Received debug set time from client that is not in game");
+            }
+        }
+
         ClientMessage::TorchToggle { enabled } => {
             if let Some(id) = &state.player_id {
                 game_state.toggle_player_torch(id, enabled).await;

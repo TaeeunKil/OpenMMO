@@ -9,6 +9,7 @@ pub const GAME_DAYS_PER_YEAR: i64 = GAME_DAYS_PER_MONTH * GAME_MONTHS_PER_YEAR;
 pub const GAME_START_YEAR: i64 = 217;
 pub const GAME_SECONDS_PER_REAL_SECOND: f64 =
     (GAME_HOURS_PER_DAY as f64 * GAME_MINUTES_PER_HOUR as f64 * 60.0) / REAL_DAY_DURATION_SECONDS;
+pub const GAME_SECONDS_PER_DAY: i64 = GAME_HOURS_PER_DAY * GAME_MINUTES_PER_HOUR * 60;
 
 impl super::GameState {
     pub fn default_start_datetime() -> GameDateTime {
@@ -68,10 +69,35 @@ impl super::GameState {
     }
 
     pub fn current_total_game_seconds(&self) -> i64 {
-        let elapsed_real_seconds = self.game_clock_start_real.elapsed().as_secs_f64();
+        let clock = self.game_clock.read().unwrap();
+        let elapsed_real_seconds = clock.start_real.elapsed().as_secs_f64();
         let elapsed_game_seconds =
             (elapsed_real_seconds * GAME_SECONDS_PER_REAL_SECOND).floor() as i64;
-        self.game_clock_start_game_seconds + elapsed_game_seconds
+        clock.start_game_seconds + elapsed_game_seconds
+    }
+
+    /// Debug: jump the game clock to the next occurrence of `hour:minute`,
+    /// then broadcast the new time immediately. Only ever moves time forward —
+    /// rewinding the persisted world clock would confuse schedules and saves.
+    pub fn debug_set_time(&self, hour: u8, minute: u8) -> GameDateTime {
+        let hour = i64::from(hour).clamp(0, GAME_HOURS_PER_DAY - 1);
+        let minute = i64::from(minute).clamp(0, GAME_MINUTES_PER_HOUR - 1);
+
+        let current = self.current_total_game_seconds();
+        let day_start = current - current.rem_euclid(GAME_SECONDS_PER_DAY);
+        let mut target = day_start + (hour * GAME_MINUTES_PER_HOUR + minute) * 60;
+        if target <= current {
+            target += GAME_SECONDS_PER_DAY;
+        }
+
+        // The write guard must drop before broadcast_game_time, which
+        // re-acquires the clock lock for reading.
+        {
+            let mut clock = self.game_clock.write().unwrap();
+            clock.start_real = std::time::Instant::now();
+            clock.start_game_seconds = target;
+        }
+        self.broadcast_game_time()
     }
 
     pub fn current_game_datetime(&self) -> GameDateTime {

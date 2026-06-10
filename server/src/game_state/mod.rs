@@ -69,6 +69,15 @@ struct IdState {
     owner_spawn_counts: HashMap<u32, u32>,
 }
 
+/// Anchor for the game clock: game time = `start_game_seconds` plus scaled
+/// real time elapsed since `start_real`. Behind a std RwLock (not tokio)
+/// because it is read from sync contexts; writes only happen on debug
+/// time jumps.
+pub(crate) struct GameClock {
+    pub start_real: Instant,
+    pub start_game_seconds: i64,
+}
+
 /// Server-side ground item with despawn timestamp.
 pub(crate) struct ServerGroundItem {
     pub item: onlinerpg_shared::inventory::GroundItem,
@@ -81,8 +90,7 @@ pub struct GameState {
     player_spatial_cells: Arc<RwLock<HashMap<SpatialCell, HashSet<PlayerId>>>>,
     monsters: Arc<RwLock<HashMap<String, crate::types::Monster>>>,
     broadcast_tx: GameStateSender,
-    game_clock_start_real: Instant,
-    game_clock_start_game_seconds: i64,
+    game_clock: Arc<std::sync::RwLock<GameClock>>,
     monster_defs: MonsterDefs,
     item_defs: ItemDefs,
     id_state: Arc<RwLock<IdState>>,
@@ -124,8 +132,10 @@ impl GameState {
             player_spatial_cells: Arc::new(RwLock::new(HashMap::new())),
             monsters: Arc::new(RwLock::new(HashMap::new())),
             broadcast_tx,
-            game_clock_start_real: Instant::now(),
-            game_clock_start_game_seconds: Self::datetime_to_total_game_seconds(&initial_datetime),
+            game_clock: Arc::new(std::sync::RwLock::new(GameClock {
+                start_real: Instant::now(),
+                start_game_seconds: Self::datetime_to_total_game_seconds(&initial_datetime),
+            })),
             monster_defs,
             item_defs,
             id_state: Arc::new(RwLock::new(IdState::default())),

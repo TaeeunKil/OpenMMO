@@ -48,6 +48,24 @@ const commands: Record<string, CommandHandler> = {
     })
   },
 
+  '/time': (args) => {
+    const match = args.trim().match(/^(\d{1,2})(?::(\d{1,2}))?$/)
+    if (!match) {
+      addChatMessage({
+        text: 'Usage: /time HH[:MM] — jump the game clock forward to that time (e.g. /time 9:30)',
+        sender: 'system',
+      })
+      return
+    }
+    const hour = Math.min(parseInt(match[1], 10), 23)
+    const minute = Math.min(match[2] ? parseInt(match[2], 10) : 0, 59)
+    networkManager.sendDebugSetTime(hour, minute)
+    addChatMessage({
+      text: `Time: requested jump to ${hour}:${String(minute).padStart(2, '0')}`,
+      sender: 'system',
+    })
+  },
+
   '/wireframe': () => {
     const next = !get(riverWireframeVisible)
     riverWireframeVisible.set(next)

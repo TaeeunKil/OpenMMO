@@ -129,6 +129,7 @@ export type ClientMessage =
   | 'RequestRespawn'
   | { DebugTeleport: { position: Position } }
   | { DebugDropItem: { item_def_id: string } }
+  | { DebugSetTime: { hour: number; minute: number } }
   | { TorchToggle: { enabled: boolean } }
   | {
       ToggleDoor: {
