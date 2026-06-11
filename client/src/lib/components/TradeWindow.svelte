@@ -11,7 +11,7 @@
   import { inventoryStore, playerGold } from '../stores/inventoryStore'
   import type { ItemInstance } from '../stores/inventoryStore'
   import { getItemDef, type ItemDefinition } from '../data/itemDefs'
-  import { getMerchantByNpcName } from '../data/merchantDefs'
+  import { getNpcCapabilities } from '../data/traderDefs'
   import { MAX_TRADE_DISTANCE_METERS } from '../data/tradeConstants'
   import GoldAmount from './GoldAmount.svelte'
   import { networkManager } from '../network/socket'
@@ -46,9 +46,12 @@
 
   const portraitSrc = $derived.by(() => {
     if (!session) return null
-    const def = getMerchantByNpcName(session.merchantName)
-    return def ? `/portraits/${def.id}.png` : null
+    const traderId = getNpcCapabilities(session.merchantName).traderId
+    return traderId ? `/portraits/${traderId}.png` : null
   })
+
+  /** Resident traders (finite wallet, real stock) vs merchants (catalog). */
+  const isResident = $derived(session !== null && session.npcGold !== null)
 
   // The server rejects trades beyond MAX_TRADE_DISTANCE_METERS; close the
   // window at the same range so the player isn't left with a shop that only
@@ -73,13 +76,16 @@
     return () => clearInterval(timer)
   })
 
+  // Residents only buy their wishlist; merchants buy anything priced.
   const sellEntries = $derived.by(() => {
     if (!session) return []
+    const wishlist = session.wishlist
     return $inventoryStore.bag
       .map((item) => ({ item, def: getItemDef(item.item_def_id) }))
       .filter(
         (entry): entry is { item: ItemInstance; def: ItemDefinition } =>
-          (entry.def?.basePrice ?? 0) > 0
+          (entry.def?.basePrice ?? 0) > 0 &&
+          (wishlist.length === 0 || wishlist.includes(entry.item.item_def_id))
       )
   })
 
@@ -120,7 +126,13 @@
   )
   /** Net gold the player must pay; negative means the player earns gold. */
   const netCost = $derived(buyTotal - sellTotal)
-  const canConfirm = $derived(cart.length > 0 && netCost <= $playerGold)
+  /** Residents pay sells out of a finite wallet (buys refill it). */
+  const npcCanAfford = $derived(
+    session?.npcGold == null || sellTotal - buyTotal <= session.npcGold
+  )
+  const canConfirm = $derived(
+    cart.length > 0 && netCost <= $playerGold && npcCanAfford
+  )
 
   function addBuy(itemDefId: string, def: ItemDefinition) {
     // The first added unit carries any haggled deal (single-use server-side).
@@ -194,6 +206,13 @@
       .reduce((sum, e) => sum + e.qty, 0)
   }
 
+  /** Buy units of this def already in the cart (caps resident stock buys). */
+  function reservedBuyQty(itemDefId: string): number {
+    return cart
+      .filter((e) => e.kind === 'buy' && e.itemDefId === itemDefId)
+      .reduce((sum, e) => sum + e.qty, 0)
+  }
+
   function onConfirm() {
     if (!session || !canConfirm) return
     // Deal entries go first so the server applies the single-use modifier
@@ -234,7 +253,9 @@
       />
     {/if}
     <div class="panel-header">
-      <span class="panel-title">{session.merchantName}'s Shop</span>
+      <span class="panel-title">
+        {isResident ? `Trade with ${session.merchantName}` : `${session.merchantName}'s Shop`}
+      </span>
       <button class="close-btn" onclick={() => shopSession.set(null)}>&times;</button>
     </div>
 
@@ -256,6 +277,30 @@
               </button>
             {/if}
           {/each}
+          {#each session.stock as entry (entry.itemDefId)}
+            {@const def = getItemDef(entry.itemDefId)}
+            {#if def}
+              {@const pct = dealPct(entry.itemDefId, 'buy')}
+              <button
+                class="item-row"
+                disabled={reservedBuyQty(entry.itemDefId) >= entry.quantity}
+                onclick={() => addBuy(entry.itemDefId, def)}
+              >
+                <img class="item-icon" src="/items/{def.icon}" alt="" draggable="false" />
+                <span class="item-name">
+                  {def.name}{entry.quantity > 1 ? ` ×${entry.quantity}` : ''}
+                </span>
+                {#if pct !== 0}
+                  <span class="deal-badge" class:markup={isMarkup('buy', pct)}>{pct > 0 ? '+' : ''}{pct}%</span>
+                {/if}
+                <span class="item-price"><GoldAmount copper={buyPrice(def, pct)} /></span>
+              </button>
+            {/if}
+          {:else}
+            {#if isResident}
+              <div class="empty-note">Nothing for sale</div>
+            {/if}
+          {/each}
         </div>
       </div>
 
@@ -264,6 +309,12 @@
           <span class="cart-label">Current</span>
           <GoldAmount copper={$playerGold} />
         </div>
+        {#if session.npcGold !== null}
+          <div class="cart-line cart-current" class:npc-broke={!npcCanAfford}>
+            <span class="cart-label">{session.merchantName}</span>
+            <GoldAmount copper={session.npcGold} />
+          </div>
+        {/if}
         <div class="column-title">Cart</div>
         <div class="item-list">
           {#each cart as entry (entry.kind + ':' + (entry.instanceId ?? entry.itemDefId) + (entry.dealPct ? ':deal' : ''))}
@@ -531,6 +582,11 @@
     padding-bottom: 4px;
     margin-bottom: 4px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  }
+
+  /* The resident NPC cannot cover the cart's net payout. */
+  .npc-broke .cart-label {
+    color: #ff9a8a;
   }
 
   .cart-footer {

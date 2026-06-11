@@ -536,11 +536,12 @@ fn build_system_prompt(npc: &NpcConfig) -> anyhow::Result<String> {
             parts.push(driver::load_system_prompt(instance_path)?);
         }
         // Merchants get their catalog and prices for roleplay; the server
-        // re-validates every trade and haggle.
+        // re-validates every trade and haggle. Resident traders get their
+        // wishlist per turn instead (driver/prompt.rs) so it can satiate.
         if let Some(shop) = npc
             .character_name
             .as_deref()
-            .and_then(crate::shop_info::shop_prompt_for)
+            .and_then(crate::shop_info::merchant_prompt_for)
         {
             parts.push(shop);
         }

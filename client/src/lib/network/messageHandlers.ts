@@ -21,6 +21,8 @@ import {
   shopSession,
   applyDealUpdate,
   setMerchantDeals,
+  wasShopRequested,
+  pendingTradeOffer,
 } from '../stores/tradeStore'
 import { editorTreeDataManager } from '../stores/editorStore'
 import type { MonsterData } from '../types/Monster'
@@ -702,15 +704,37 @@ export function handleServerMessage(
       addChatMessage({ text: data.message, sender: 'system' })
       break
 
-    case 'ShopState':
-      shopSession.set({
+    case 'ShopState': {
+      const session = {
         merchantPlayerId: data.merchant_player_id,
         merchantName: data.merchant_name,
         catalog: data.catalog ?? [],
         sellRatePercent: data.sell_rate_percent,
-      })
+        wishlist: data.wishlist ?? [],
+        stock: (data.stock ?? []).map(
+          (entry: { item_def_id: string; quantity: number }) => ({
+            itemDefId: entry.item_def_id,
+            quantity: entry.quantity,
+          })
+        ),
+        npcGold: data.npc_gold != null ? Number(data.npc_gold) : null,
+      }
       setMerchantDeals(data.merchant_player_id, data.active_deals ?? [])
+      // Open directly only when the player asked for this shop (or it's a
+      // refresh of the one already on screen). An NPC-pushed open_trade is
+      // an *offer*: the window covers much of the screen, so it just shows
+      // a small accept/decline toast instead of hijacking the view.
+      const current = get(shopSession)
+      if (
+        wasShopRequested(data.merchant_player_id) ||
+        current?.merchantPlayerId === data.merchant_player_id
+      ) {
+        shopSession.set(session)
+      } else {
+        pendingTradeOffer.set({ session, offeredAt: Date.now() })
+      }
       break
+    }
 
     case 'GoldUpdate':
       playerGold.set(Number(data.gold))

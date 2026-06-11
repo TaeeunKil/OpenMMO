@@ -54,6 +54,7 @@ pub(crate) use deals::band_invariant_holds;
 mod inventory;
 mod monster;
 mod player;
+mod salary;
 mod time;
 mod trading;
 
@@ -121,6 +122,9 @@ pub struct GameState {
     deals: Arc<RwLock<HashMap<deals::DealKey, deals::DealEntry>>>,
     /// Daily haggling budgets and cooldowns.
     deal_ledgers: Arc<RwLock<deals::DealLedgers>>,
+    /// Last game day NPC salaries were paid for; `None` until the first
+    /// salary tick after boot.
+    npc_salary_last_day: Arc<RwLock<Option<i64>>>,
 }
 
 impl GameState {
@@ -158,6 +162,7 @@ impl GameState {
             next_item_instance_id: Arc::new(RwLock::new(1)),
             deals: Arc::new(RwLock::new(HashMap::new())),
             deal_ledgers: Arc::new(RwLock::new(deals::DealLedgers::default())),
+            npc_salary_last_day: Arc::new(RwLock::new(None)),
         }
     }
 

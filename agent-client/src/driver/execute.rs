@@ -105,18 +105,22 @@ pub(super) async fn handle_response(
         } = action
         {
             let mut s = state.lock().await;
-            let target_id = s
-                .nearby_players
-                .iter()
-                .find(|(id, p)| p.name.eq_ignore_ascii_case(player) || *id == player)
-                .map(|(id, _)| id.clone());
-            let Some(target_id) = target_id else {
+            let Some((target_id, target_is_npc)) = s.resolve_nearby_player(player) else {
                 warn!("offer_deal: no nearby player named '{player}'");
                 s.push_agent_event(format!(
                     "[DealFailed] No player named '{player}' is nearby; the offer was not sent."
                 ));
                 continue;
             };
+            // The server rejects NPC targets anyway; refusing here keeps a
+            // false "[DealResult]" exchange out of the LLM's context.
+            if target_is_npc {
+                s.push_agent_event(format!(
+                    "[DealFailed] {player} is an NPC — deals can only be offered to player \
+                     travelers. Drop the subject."
+                ));
+                continue;
+            }
             let kind = match kind.as_deref() {
                 Some("sell") => onlinerpg_shared::messages::DealKind::Sell,
                 _ => onlinerpg_shared::messages::DealKind::Buy,
@@ -130,6 +134,42 @@ pub(super) async fn handle_response(
             };
             if let Err(e) = s.send_command(cmd).await {
                 error!("Failed to send offer_deal: {e}");
+            }
+            continue;
+        }
+
+        // Trade-window push: resolve the target player's name to an id and
+        // ask the server to open our shop on their client. The server
+        // validates range and trading capability; failures come back as a
+        // TradeError event.
+        if let AgentAction::OpenTrade { player } = action {
+            let mut s = state.lock().await;
+            let Some((target_id, target_is_npc)) = s.resolve_nearby_player(player) else {
+                warn!("open_trade: no nearby player named '{player}'");
+                s.push_agent_event(format!(
+                    "[TradeFailed] No player named '{player}' is nearby; no trade window was opened."
+                ));
+                continue;
+            };
+            // The server rejects NPC targets anyway; refusing here avoids
+            // pairing its TradeError with a false success event below.
+            if target_is_npc {
+                s.push_agent_event(format!(
+                    "[TradeFailed] {player} is an NPC — trade windows can only be opened for \
+                     player travelers. Drop the subject."
+                ));
+                continue;
+            }
+            let cmd = onlinerpg_shared::ClientMessage::OpenTrade {
+                target_player_id: target_id,
+            };
+            if let Err(e) = s.send_command(cmd).await {
+                error!("Failed to send open_trade: {e}");
+            } else {
+                s.push_agent_event(format!(
+                    "[OpenTrade] You asked the server to open your trade window for {player} — \
+                     it only appears on their screen if they are within a few meters and accept."
+                ));
             }
             continue;
         }

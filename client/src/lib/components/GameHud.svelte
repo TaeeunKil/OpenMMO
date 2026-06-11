@@ -8,6 +8,8 @@
   import CharacterPanel from './CharacterPanel.svelte'
   import InventoryPanel from './InventoryPanel.svelte'
   import TradeWindow from './TradeWindow.svelte'
+  import TradeOfferToast from './TradeOfferToast.svelte'
+  import NpcContextMenu from './NpcContextMenu.svelte'
   import DragGhost from './DragGhost.svelte'
   import LoadingDialog from './LoadingDialog.svelte'
   import RespawnDialog from './RespawnDialog.svelte'
@@ -83,6 +85,8 @@
       onClose={() => inventoryVisible.set(false)}
     />
     <TradeWindow />
+    <TradeOfferToast />
+    <NpcContextMenu />
   {/if}
 
   <div class="corner-actions">

@@ -1,15 +1,66 @@
 import { writable } from 'svelte/store'
 
-/** An open shop session with a merchant NPC, driven by ServerMessage::ShopState.
- *  Set to a session to open the trade window, to null to close it. */
+/** One purchasable item in a non-merchant trader's real inventory. */
+export interface StockEntry {
+  itemDefId: string
+  quantity: number
+}
+
+/** An open shop session with a trading NPC, driven by ServerMessage::ShopState.
+ *  Set to a session to open the trade window, to null to close it.
+ *  Merchants fill `catalog` (unlimited stock, unlimited wallet); resident
+ *  traders fill `wishlist`/`stock`/`npcGold` instead. */
 export interface ShopSession {
   merchantPlayerId: string
   merchantName: string
   catalog: string[]
   sellRatePercent: number
+  /** Non-merchants only buy these item defs; empty = buys anything priced. */
+  wishlist: string[]
+  /** Non-merchant real-inventory stock; merchants use `catalog`. */
+  stock: StockEntry[]
+  /** Finite wallet (non-merchants); null = effectively unlimited. */
+  npcGold: number | null
 }
 
 export const shopSession = writable<ShopSession | null>(null)
+
+/** Merchant id the player explicitly asked to trade with (sendOpenShop),
+ *  so unsolicited NPC-pushed ShopStates can be told apart from replies. */
+let requestedShop: { merchantPlayerId: string; at: number } | null = null
+const SHOP_REQUEST_TTL_MS = 5_000
+
+export function markShopRequested(merchantPlayerId: string) {
+  requestedShop = { merchantPlayerId, at: Date.now() }
+}
+
+/** True if the player recently requested this merchant's shop themselves. */
+export function wasShopRequested(merchantPlayerId: string): boolean {
+  return (
+    requestedShop !== null &&
+    requestedShop.merchantPlayerId === merchantPlayerId &&
+    Date.now() - requestedShop.at < SHOP_REQUEST_TTL_MS
+  )
+}
+
+/** An NPC-pushed (open_trade) shop the player hasn't accepted yet. The
+ *  trade window covers much of the screen, so unsolicited pushes only show
+ *  a small offer toast until the player opts in. */
+export interface PendingTradeOffer {
+  session: ShopSession
+  offeredAt: number
+}
+
+export const pendingTradeOffer = writable<PendingTradeOffer | null>(null)
+
+export function acceptTradeOffer(offer: PendingTradeOffer) {
+  pendingTradeOffer.set(null)
+  shopSession.set(offer.session)
+}
+
+export function declineTradeOffer() {
+  pendingTradeOffer.set(null)
+}
 
 /** Which side of a trade a haggled deal applies to (mirrors DealKind). */
 export type DealKind = 'buy' | 'sell'

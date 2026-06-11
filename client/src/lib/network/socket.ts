@@ -8,6 +8,7 @@ import { monsterManager } from '../managers/monsterManager'
 import { getDefaultServerUrl } from '../utils/networkUtils'
 import { simplePasswordHash } from '../utils/authUtils'
 import { clearServerGameTime } from '../stores/timeStore'
+import { markShopRequested } from '../stores/tradeStore'
 import initWasm, {
   serialize_client_message,
   deserialize_server_message,
@@ -438,6 +439,7 @@ class NetworkManager {
   }
 
   sendOpenShop(merchantPlayerId: string) {
+    markShopRequested(merchantPlayerId)
     this.sendMessage({ OpenShop: { merchant_player_id: merchantPlayerId } })
   }
 

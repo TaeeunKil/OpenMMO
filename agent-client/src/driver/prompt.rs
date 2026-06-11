@@ -47,6 +47,27 @@ pub(super) fn build_prompt(
     prompt.push_str(&state.format_world_state());
     prompt.push('\n');
 
+    // Resident-trader wishlist, rebuilt every turn from the live bag:
+    // owned items drop out, and a fully satisfied wishlist removes the
+    // section (and with it the urge to trade) entirely. It is also
+    // suppressed for a cooldown after each successful purchase, and
+    // whenever no human player is in sight — only players can sell to the
+    // NPC, so without one around the desire would only produce futile
+    // NPC-to-NPC pestering.
+    let satiated = state
+        .trade_satiated_until
+        .is_some_and(|until| std::time::Instant::now() < until);
+    if !satiated && state.has_nearby_human_players() {
+        if let Some(p) = state.self_player.as_ref() {
+            if let Some(section) =
+                crate::shop_info::resident_trade_prompt_for(&p.name, &state.self_bag)
+            {
+                prompt.push('\n');
+                prompt.push_str(&section);
+            }
+        }
+    }
+
     if let Some(ctx) = format_schedule_context(schedule, active_schedule_idx) {
         prompt.push_str(&ctx);
         prompt.push('\n');
@@ -279,6 +300,24 @@ fn format_event(state: &SharedState, msg: &ServerMessage) -> Option<String> {
              at {applied_modifier_pct}% — {message}",
             if *accepted { "GRANTED" } else { "REJECTED" }
         )),
+        ServerMessage::TradeNotice {
+            player_name,
+            item_def_id,
+            kind,
+            price,
+            npc_gold,
+        } => Some(format!(
+            "[Trade] {player_name} {} for {} — your gold is now {}",
+            match kind {
+                onlinerpg_shared::messages::DealKind::Buy =>
+                    format!("bought {item_def_id} from you"),
+                onlinerpg_shared::messages::DealKind::Sell =>
+                    format!("sold you {item_def_id}"),
+            },
+            crate::shop_info::format_price(*price),
+            crate::shop_info::format_price(*npc_gold),
+        )),
+        ServerMessage::TradeError { message } => Some(format!("[TradeError] {message}")),
         // Skip unknown/unhandled event types
         _ => None,
     }

@@ -11,8 +11,9 @@ use onlinerpg_shared::messages::{ActiveDeal, DealKind};
 use onlinerpg_shared::NPC_SIGHT_RADIUS;
 use tracing::info;
 
-use crate::merchant_defs::merchant_defs;
 use crate::types::{PlayerId, ServerMessage};
+
+use super::trading::trader_def_by_name;
 
 /// Band half-width in percentage points at CHA 10.
 pub(crate) const DEAL_BASE_HALF_BAND_PCT: i32 = 10;
@@ -21,12 +22,19 @@ pub(crate) const DEAL_MIN_HALF_BAND_PCT: i32 = 5;
 /// Band half-width ceiling (very high CHA). The money-pump invariant below
 /// must hold at this value for every merchant's sell rate.
 pub(crate) const DEAL_MAX_HALF_BAND_PCT: i32 = 25;
+/// Resident (non-merchant) band limits: twice the merchant band, per
+/// doc/ECONOMY.md ("가격 밴드: 넓음"). Residents are exempt from the
+/// money-pump invariant — their buy/sell item sets are disjoint and the
+/// finite wallet caps any loss.
+pub(crate) const RESIDENT_MIN_HALF_BAND_PCT: i32 = 10;
+pub(crate) const RESIDENT_MAX_HALF_BAND_PCT: i32 = 50;
 
 /// How long a granted deal stays redeemable (real time).
 const DEAL_TTL_MS: u64 = 5 * 60 * 1000;
 /// Minimum real time between *accepted* offers per (merchant, player).
 const DEAL_COOLDOWN_MS: u64 = 30 * 1000;
-/// Total discount value a merchant may grant per game day (smallest unit).
+/// Total discount value a trading NPC (merchant or resident) may grant per
+/// game day (smallest unit).
 const MERCHANT_DAILY_DISCOUNT_BUDGET: i64 = 10_000;
 /// Total discount value a player may receive per game day across merchants.
 const PLAYER_DAILY_DISCOUNT_CAP: i64 = 4_000;
@@ -47,6 +55,13 @@ pub(crate) fn band_invariant_holds(sell_rate_percent: u32) -> bool {
 pub(crate) fn deal_half_band_pct(cha: u8) -> i32 {
     (DEAL_BASE_HALF_BAND_PCT + 2 * (i32::from(cha) - 10))
         .clamp(DEAL_MIN_HALF_BAND_PCT, DEAL_MAX_HALF_BAND_PCT)
+}
+
+/// Resident band half-width: twice the merchant width before clamping, so
+/// "정말 필요한 물건엔 프리미엄 허용" while CHA still matters.
+pub(crate) fn resident_half_band_pct(cha: u8) -> i32 {
+    (2 * (DEAL_BASE_HALF_BAND_PCT + 2 * (i32::from(cha) - 10)))
+        .clamp(RESIDENT_MIN_HALF_BAND_PCT, RESIDENT_MAX_HALF_BAND_PCT)
 }
 
 /// Unit price a player pays when buying at `modifier_pct`.
@@ -198,8 +213,8 @@ impl super::GameState {
             )
         };
 
-        let Some(def) = merchant_defs().get_by_npc_name(&merchant_name).cloned() else {
-            return reject("you are not a merchant").await;
+        let Some(def) = trader_def_by_name(&merchant_name) else {
+            return reject("you have nothing to trade with").await;
         };
         let Some(base_price) = self
             .item_defs
@@ -208,9 +223,6 @@ impl super::GameState {
         else {
             return reject("that item has no price").await;
         };
-        if kind == DealKind::Buy && !def.sells(item_def_id) {
-            return reject("that item is not in your catalog").await;
-        }
 
         // Clamp the requested modifier to the target's CHA-derived band.
         let cha = {
@@ -220,9 +232,12 @@ impl super::GameState {
                 .map(|(_, _, attrs)| attrs.cha)
                 .unwrap_or(10)
         };
-        let half_band = deal_half_band_pct(cha);
+        let (rate, half_band) = match def.haggle_params(kind, item_def_id, cha) {
+            Ok(params) => params,
+            Err(why) => return reject(why).await,
+        };
         let applied = modifier_pct.clamp(-half_band, half_band);
-        let cost = deal_cost(base_price, def.sell_rate_percent, kind, applied);
+        let cost = deal_cost(base_price, rate, kind, applied);
 
         let now_ms = Self::now_ms();
         let game_day = self.current_total_game_seconds() / super::time::GAME_SECONDS_PER_DAY;

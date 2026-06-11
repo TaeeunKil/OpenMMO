@@ -15,8 +15,8 @@ const byNpcName = new Map(
 )
 
 /** Merchant lookup by NPC character name (NPCs are agent-controlled players).
- *  TODO(Phase 3): replace name-keyed lookup with server-sent NPC capabilities
- *  (doc/ECONOMY.md "거래 진입 UI") so non-merchant NPCs can trade too. */
+ *  Non-merchant traders live in traderDefs.ts; use getNpcCapabilities there
+ *  to decide how an NPC can be interacted with. */
 export function getMerchantByNpcName(
   npcName: string
 ): MerchantDefinition | undefined {

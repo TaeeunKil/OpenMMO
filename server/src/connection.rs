@@ -792,6 +792,12 @@ async fn handle_client_message(
                     .await;
             }
         }
+
+        ClientMessage::OpenTrade { target_player_id } => {
+            if let Some(id) = &state.player_id {
+                game_state.open_trade(id, &target_player_id).await;
+            }
+        }
     }
 
     Ok(vec![])

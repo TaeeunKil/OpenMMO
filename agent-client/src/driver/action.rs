@@ -67,6 +67,13 @@ pub(super) enum AgentAction {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// Open your trade window on a nearby player's screen (traders only) —
+    /// the conversational entry point for trading.
+    #[serde(rename = "open_trade", alias = "trade")]
+    OpenTrade {
+        #[serde(alias = "target", alias = "player_name", alias = "target_player")]
+        player: String,
+    },
     #[serde(rename = "wait", alias = "idle", alias = "observe", alias = "none")]
     Wait,
 }
@@ -165,9 +172,10 @@ pub(super) fn action_to_command(
             })
         }
         AgentAction::Respawn => Some(ClientMessage::RequestRespawn),
-        // Needs player-name → id resolution from SharedState; handled in
+        // Need player-name → id resolution from SharedState; handled in
         // `execute::handle_response`, not here.
         AgentAction::OfferDeal { .. } => None,
+        AgentAction::OpenTrade { .. } => None,
         AgentAction::Wait => None,
     }
 }

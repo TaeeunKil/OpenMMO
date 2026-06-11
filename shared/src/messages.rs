@@ -36,6 +36,15 @@ pub struct ActiveDeal {
     pub expires_in_secs: u32,
 }
 
+/// One purchasable item in a non-merchant trader's real inventory, as
+/// included in `ShopState`. Merchants use `catalog` (unlimited stock)
+/// instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockEntry {
+    pub item_def_id: String,
+    pub quantity: u32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     Authenticate {
@@ -163,6 +172,12 @@ pub enum ClientMessage {
         modifier_pct: i32,
         /// LLM's stated reason for the decision (logged server-side).
         reason: String,
+    },
+    /// NPC-only: push the sender's trade window (`ShopState`) onto a nearby
+    /// player's client — the conversational entry point for trading
+    /// ("LLM opens the trade window", doc/ECONOMY.md).
+    OpenTrade {
+        target_player_id: String,
     },
 }
 
@@ -363,17 +378,33 @@ pub enum ServerMessage {
     InventoryError {
         message: String,
     },
-    /// Response to OpenShop: the merchant's catalog. Display prices come from
-    /// item definitions; the server re-validates them on Buy/Sell.
+    /// Response to OpenShop (or pushed by an NPC's OpenTrade): the trader's
+    /// goods. Display prices come from item definitions; the server
+    /// re-validates them on Buy/Sell.
     ShopState {
         merchant_player_id: String,
         merchant_name: String,
+        /// Merchant catalog (unlimited stock). Empty for non-merchants.
         catalog: Vec<String>,
+        /// Percentage of base price paid when the player sells. For
+        /// non-merchants this is the wishlist premium rate (can exceed 100).
         sell_rate_percent: u32,
         /// Haggled price modifiers this player currently holds with this
         /// merchant.
         #[serde(default)]
         active_deals: Vec<ActiveDeal>,
+        /// Non-merchants only buy these item defs (their wishlist). Empty
+        /// for merchants, who buy anything with a base price.
+        #[serde(default)]
+        wishlist: Vec<String>,
+        /// Non-merchant real-inventory stock the player can buy (at base
+        /// price). Empty for merchants, who use `catalog`.
+        #[serde(default)]
+        stock: Vec<StockEntry>,
+        /// The trader's wallet when finite (non-merchants); `None` means
+        /// effectively unlimited (merchants).
+        #[serde(default)]
+        npc_gold: Option<i64>,
     },
     /// Direct message: the receiving player's current gold (smallest unit).
     GoldUpdate {
@@ -391,6 +422,18 @@ pub enum ServerMessage {
         kind: DealKind,
         modifier_pct: i32,
         expires_in_secs: u32,
+    },
+    /// Direct to a trading NPC: a player completed a buy/sell against it,
+    /// so its LLM can react in conversation. `kind` is from the player's
+    /// perspective (Buy = the player bought from the NPC).
+    TradeNotice {
+        player_name: String,
+        item_def_id: String,
+        kind: DealKind,
+        /// Gold that changed hands (smallest unit).
+        price: i64,
+        /// The NPC's wallet after the trade.
+        npc_gold: i64,
     },
     /// Direct to the offering NPC: the server's verdict on its `OfferDeal`.
     DealResult {

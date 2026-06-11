@@ -2,6 +2,7 @@
   import { gameStore } from '../stores/gameStore'
   import { networkManager } from '../network/socket'
   import { handleCommand, commandNames } from '../chat-commands'
+  import { chatFocusRequest } from '../stores/npcMenuStore'
 
   type Tab = 'say' | 'combat'
   const TRANSCRIPT_FADE_DELAY_MS = 10_000
@@ -104,6 +105,14 @@
   }
 
   let chatInput = $state<HTMLInputElement>()
+
+  // NPC "Talk" action (click or context menu) asks for input focus.
+  $effect(() => {
+    if ($chatFocusRequest > 0) {
+      activeTab = 'say'
+      chatInput?.focus()
+    }
+  })
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />

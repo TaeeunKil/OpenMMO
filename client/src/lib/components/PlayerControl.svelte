@@ -9,8 +9,9 @@
   import { combatController } from '../managers/combatController'
   import { preloadSwordHitSound, preloadSwordMissSound } from '../managers/sfxManager'
   import { inputHandler, type ClickIntent } from '../managers/inputHandler'
-  import { getMerchantByNpcName } from '../data/merchantDefs'
+  import { getNpcCapabilities } from '../data/traderDefs'
   import { NPC_TRADE_RANGE_METERS } from '../data/tradeConstants'
+  import { npcContextMenu, requestChatFocus } from '../stores/npcMenuStore'
   import { mapEditorMode, housingEditorMode, debugSpeedMode, torchLightEnabled } from '../stores/debugStore'
   import { localTorchEquipped } from '../stores/inventoryStore'
   import {
@@ -755,32 +756,82 @@
     })
   }
 
+  /** Open a trading NPC's window, walking into range first if needed. */
+  function approachAndTrade(intent: Extract<ClickIntent, { type: 'interact_npc' }>) {
+    if (intent.distance <= NPC_TRADE_RANGE_METERS) {
+      networkManager.sendOpenShop(intent.playerId)
+      return
+    }
+
+    // Too far: walk toward the trader, stopping just short.
+    if (!currentPlayer) return
+    combatController.cancelCombat()
+    const dx = currentPlayer.position.x - intent.position.x
+    const dz = currentPlayer.position.z - intent.position.z
+    const dist = Math.sqrt(dx * dx + dz * dz) || 1
+    const stopShort = Math.min(NPC_TRADE_RANGE_METERS - 1, dist)
+    handleClickToMove({
+      x: intent.position.x + (dx / dist) * stopShort,
+      y: intent.position.y,
+      z: intent.position.z + (dz / dist) * stopShort,
+    })
+  }
+
+  function processClickIntent(event: MouseEvent): ClickIntent {
+    return inputHandler.processCanvasClick(event, {
+      camera,
+      monsterMeshes,
+      npcMeshes,
+      doorMeshes,
+      objectMeshes,
+      groundItemMeshes,
+      groundMeshes,
+      playerPosition: {
+        x: currentPlayer!.position.x,
+        y: currentPlayer!.position.y,
+        z: currentPlayer!.position.z,
+      },
+      playerFloorLevel: get(playerFloorLevel),
+      isMonsterDead: (id) => {
+        const m = monsterManager.monsters.get(id)
+        return m?.state === 'dead' || false
+      },
+    })
+  }
+
+  /** Right-click on an NPC: open the context menu with the interactions the
+   *  NPC's data supports (doc/ECONOMY.md "거래 진입 UI"). */
+  function handleNpcContextMenu(event: MouseEvent) {
+    if (!currentPlayer || currentPlayer.health <= 0) return
+    const intent = processClickIntent(event)
+    if (intent.type !== 'interact_npc') return
+    const npc = get(gameStore).otherPlayers.get(intent.playerId)
+    if (!npc?.isNpc) return
+
+    const caps = getNpcCapabilities(npc.name)
+    const entries = [{ label: 'Talk', action: () => requestChatFocus() }]
+    if (caps.trade) {
+      entries.push({ label: 'Trade', action: () => approachAndTrade(intent) })
+    }
+    npcContextMenu.set({
+      npcName: npc.name,
+      screenX: event.clientX,
+      screenY: event.clientY,
+      entries,
+    })
+  }
+
   function handleCanvasClickIntent(event: MouseEvent) {
     const editorMode = $mapEditorMode || $housingEditorMode
+    if (event.button === 2 && !editorMode) {
+      handleNpcContextMenu(event)
+      return
+    }
     const playerControlEvent = createCanvasIntentEvent({
       event,
       editorMode,
       currentPlayer,
-      processIntent: () =>
-        inputHandler.processCanvasClick(event, {
-          camera,
-          monsterMeshes,
-          npcMeshes,
-          doorMeshes,
-          objectMeshes,
-          groundItemMeshes,
-          groundMeshes,
-          playerPosition: {
-            x: currentPlayer!.position.x,
-            y: currentPlayer!.position.y,
-            z: currentPlayer!.position.z,
-          },
-          playerFloorLevel: get(playerFloorLevel),
-          isMonsterDead: (id) => {
-            const m = monsterManager.monsters.get(id)
-            return m?.state === 'dead' || false
-          },
-        }),
+      processIntent: () => processClickIntent(event),
     })
     if (!playerControlEvent) return
 
@@ -808,28 +859,15 @@
       approachAndPickup,
       interactNpc: (intent) => {
         const npc = get(gameStore).otherPlayers.get(intent.playerId)
-        if (!npc) return
-        // Merchant NPCs open their shop; other NPCs have no click
-        // interaction yet (planned: context menu with talk/trade).
-        if (!getMerchantByNpcName(npc.name)) return
-
-        if (intent.distance <= NPC_TRADE_RANGE_METERS) {
-          networkManager.sendOpenShop(intent.playerId)
-          return
+        if (!npc?.isNpc) return
+        // Click default per NPC kind: merchants open their shop, everyone
+        // else starts a conversation. Right-click offers both explicitly.
+        const caps = getNpcCapabilities(npc.name)
+        if (caps.defaultAction === 'trade') {
+          approachAndTrade(intent)
+        } else {
+          requestChatFocus()
         }
-
-        // Too far: walk toward the merchant, stopping just short.
-        if (!currentPlayer) return
-        combatController.cancelCombat()
-        const dx = currentPlayer.position.x - intent.position.x
-        const dz = currentPlayer.position.z - intent.position.z
-        const dist = Math.sqrt(dx * dx + dz * dz) || 1
-        const stopShort = Math.min(NPC_TRADE_RANGE_METERS - 1, dist)
-        handleClickToMove({
-          x: intent.position.x + (dx / dist) * stopShort,
-          y: intent.position.y,
-          z: intent.position.z + (dz / dist) * stopShort,
-        })
       },
       moveToGround: (position) => {
         combatController.cancelCombat()

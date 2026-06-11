@@ -8,6 +8,7 @@ mod item_defs;
 mod merchant_defs;
 mod monster_defs;
 mod npc_schedule;
+mod npc_defs;
 mod terrain;
 mod types;
 mod world_config;
@@ -138,6 +139,9 @@ async fn main() {
             if tick_count % 2 == 0 {
                 game_state_for_time_sync.tick_regeneration().await;
             }
+
+            // Pay NPC trader salaries on game-day rollover (economy phase 3)
+            game_state_for_time_sync.tick_npc_salaries().await;
 
             // Batch-save dirty character states every 4 ticks (32 seconds)
             if tick_count % 4 == 0 {

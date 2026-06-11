@@ -13,6 +13,9 @@ use tokio::sync::{mpsc, Notify};
 const MAX_EVENTS: usize = 200;
 /// Distance threshold for "player appeared nearby" agent events (in game units).
 const NEARBY_PLAYER_RADIUS: f32 = 10.0;
+/// Real-time cooldown on the wishlist prompt section after the NPC buys
+/// a wishlist item (see `trade_satiated_until`).
+const WISHLIST_TRADE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// NPC sight distance for deciding which nearby human and monster activity
 /// matters. Re-exported from the shared crate so the server's event-delivery
 /// radius and the agent's perception radius are guaranteed equal.
@@ -91,6 +94,16 @@ pub struct SharedState {
     pub self_player_id: Option<String>,
     /// Our own player state (updated from JoinSuccess, GameState, health updates, etc.)
     pub self_player: Option<Player>,
+    /// Our own gold in the smallest unit (from GoldUpdate). NPC traders'
+    /// wallets are real server-side gold (economy phase 3).
+    pub self_gold: Option<i64>,
+    /// Our own bag (from InventoryState/InventoryUpdated), so a trading
+    /// NPC knows what it carries.
+    pub self_bag: Vec<onlinerpg_shared::inventory::ItemInstance>,
+    /// Until when the wishlist prompt section stays suppressed after a
+    /// successful purchase — a satisfied shopper stops shopping for a
+    /// while even if other wishes remain.
+    pub trade_satiated_until: Option<std::time::Instant>,
     /// Known nearby players
     pub nearby_players: HashMap<String, Player>,
     /// Known nearby monsters
@@ -141,6 +154,9 @@ impl SharedState {
             in_game: false,
             self_player_id: None,
             self_player: None,
+            self_gold: None,
+            self_bag: Vec::new(),
+            trade_satiated_until: None,
             nearby_players: HashMap::new(),
             nearby_monsters: HashMap::new(),
             events: Vec::new(),
@@ -341,12 +357,21 @@ impl SharedState {
                     EventUrgency::Routine
                 }
             }
-            // Urgent: someone chats (not ourselves)
+            // Urgent: a human chats (not ourselves). NPC→NPC chat is only
+            // Routine: urgent wakeups on both sides turn any shared topic
+            // into an endless conversation loop (and an LLM-cost leak), so
+            // NPC replies wait for the next batched prompt instead.
             ServerMessage::ChatMessage { player_id, .. } => {
-                if self_id != Some(player_id.as_str()) {
-                    EventUrgency::Urgent
-                } else {
+                if self_id == Some(player_id.as_str()) {
                     EventUrgency::Noise
+                } else if self
+                    .nearby_players
+                    .get(player_id)
+                    .is_some_and(|p| p.is_npc)
+                {
+                    EventUrgency::Routine
+                } else {
+                    EventUrgency::Urgent
                 }
             }
             // Urgent: kicked
@@ -355,6 +380,17 @@ impl SharedState {
             // Urgent: verdict on our haggling offer — the NPC should follow
             // up in the ongoing conversation (e.g. correct a clamped price).
             ServerMessage::DealResult { .. } => EventUrgency::Urgent,
+
+            // Urgent: a player traded with us, or our trade request failed —
+            // both deserve an in-character reaction.
+            ServerMessage::TradeNotice { .. } | ServerMessage::TradeError { .. } => {
+                EventUrgency::Urgent
+            }
+
+            // State-only: tracked on SharedState, shown in the world state.
+            ServerMessage::GoldUpdate { .. }
+            | ServerMessage::InventoryState { .. }
+            | ServerMessage::InventoryUpdated { .. } => EventUrgency::Noise,
 
             // Urgent: another player attacks a monster (so we can join in)
             ServerMessage::PlayerAttacked { player_id, .. } => {
@@ -475,6 +511,23 @@ impl SharedState {
             }
             ServerMessage::CharacterCreated { ref character } => {
                 self.characters.push(character.clone());
+            }
+            ServerMessage::GoldUpdate { gold } => {
+                self.self_gold = Some(*gold);
+            }
+            ServerMessage::InventoryState { ref inventory }
+            | ServerMessage::InventoryUpdated { ref inventory } => {
+                self.self_bag = inventory.bag.clone();
+            }
+            // A player sold to us = we bought a wishlist item (the server
+            // only lets residents buy their wishlist): shopping mood
+            // satisfied for a while.
+            ServerMessage::TradeNotice {
+                kind: onlinerpg_shared::messages::DealKind::Sell,
+                ..
+            } => {
+                self.trade_satiated_until =
+                    Some(std::time::Instant::now() + WISHLIST_TRADE_COOLDOWN);
             }
             ServerMessage::PlayerMoved {
                 player_id,
@@ -742,6 +795,15 @@ impl SharedState {
         self.agent_events.push(event);
     }
 
+    /// Resolve a player name (or raw id) among nearby players, as used by
+    /// player-targeting LLM actions. Returns `(player_id, is_npc)`.
+    pub fn resolve_nearby_player(&self, name_or_id: &str) -> Option<(String, bool)> {
+        self.nearby_players
+            .iter()
+            .find(|(id, p)| p.name.eq_ignore_ascii_case(name_or_id) || *id == name_or_id)
+            .map(|(id, p)| (id.clone(), p.is_npc))
+    }
+
     /// Current game time snapshot for schedule resolution.
     pub fn time_context(&self) -> (Option<bool>, Option<u32>, Option<u32>) {
         (self.is_night, self.game_hour, self.game_minute)
@@ -763,6 +825,26 @@ impl SharedState {
                 p.position.y,
                 p.position.z
             ));
+        }
+        if let Some(gold) = self.self_gold {
+            lines.push(format!(
+                "Your gold: {}",
+                crate::shop_info::format_price(gold)
+            ));
+        }
+        if !self.self_bag.is_empty() {
+            let items: Vec<String> = self
+                .self_bag
+                .iter()
+                .map(|i| {
+                    if i.quantity > 1 {
+                        format!("{} x{}", i.item_def_id, i.quantity)
+                    } else {
+                        i.item_def_id.clone()
+                    }
+                })
+                .collect();
+            lines.push(format!("Your bag: {}", items.join(", ")));
         }
 
         // Nearby players (exclude self and humans beyond the sight radius)
