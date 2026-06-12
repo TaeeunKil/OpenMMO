@@ -45,9 +45,11 @@ export default defineConfig(({ mode }) => {
       port: 10004,
       https,
       hmr,
-      headers: {
-        'Cache-Control': 'public, max-age=3600',
-      },
+      // No global Cache-Control here: it only ever applied to transformed
+      // source modules (proxied /api responses bypass server.headers), where
+      // an hour of max-age serves stale modules after HMR/scp churn — wasm
+      // export errors, split store singletons. Vite's default ETag/304
+      // revalidation is the right policy for dev.
       proxy: {
         '/api/terrain': { target: apiTarget, changeOrigin: true },
         '/api/housing': { target: apiTarget, changeOrigin: true },
