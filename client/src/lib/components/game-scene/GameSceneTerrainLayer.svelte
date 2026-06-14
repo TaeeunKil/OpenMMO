@@ -8,9 +8,11 @@
   import {
     makeSplatStandardMaterial,
     createSplatBrushUniforms,
+    createSplatHoleUniforms,
     padTileScales,
     padTileSwapUvs,
     type SplatBrushUniforms,
+    type SplatHoleUniforms,
   } from '../makeSplatStandardMaterial'
   import type { SplatLayer } from '../makeSplatStandardMaterial'
   import type { TerrainTile } from './terrain-utils'
@@ -28,6 +30,8 @@
   } from '../../stores/editorStore'
   import type { BrushMode, EditorTool } from '../../stores/editorStore'
   import { enqueueTileWork } from '../../utils/tileWorkQueue'
+  import { currentDungeonId } from '../../stores/dungeonStore'
+  import { dungeonManager } from '../../managers/dungeonManager'
 
   interface Props {
     terrainGeometry: THREE.BufferGeometry | null
@@ -76,6 +80,25 @@
 
   // Shared brush/grid uniforms
   const brushUniforms: SplatBrushUniforms = createSplatBrushUniforms()
+
+  // Shared dungeon-entrance hole uniforms — referenced by every pooled
+  // terrain material so a single sync opens the hole on whichever tile
+  // covers the entrance.
+  const holeUniforms: SplatHoleUniforms = createSplatHoleUniforms()
+
+  // Open/close the entrance hole as dungeons register near the player. The
+  // shader holes a single rect, which matches the one-dungeon-at-a-time
+  // registration (dungeonManager.updateAutoRegister); it would need a rect
+  // array if simultaneous registrations ever become possible.
+  const holeUnsub = currentDungeonId.subscribe((id) => {
+    const rect = id ? dungeonManager.entranceHoleRect() : null
+    if (rect) {
+      holeUniforms.holeRect.value.set(rect.minX, rect.minZ, rect.maxX, rect.maxZ)
+      holeUniforms.holeActive.value = 1.0
+    } else {
+      holeUniforms.holeActive.value = 0.0
+    }
+  })
 
   // Track whether editor overlay is compiled into materials.
   // Starts false for faster initial pipeline compilation; upgraded on first editor use.
@@ -168,6 +191,7 @@
       splatMap: defaultSplat,
       splatScale: 1.0,
       sharedBrushUniforms: brushUniforms,
+      sharedHoleUniforms: holeUniforms,
       includeEditorOverlay: editorOverlayCompiled,
     })
     return mat
@@ -330,6 +354,7 @@
   onDestroy(() => {
     brushUnsubs.forEach((u) => u())
     brushUnsubs = []
+    holeUnsub()
   })
 
   // ── Geometry management (SvelteMap, needed for template) ──────

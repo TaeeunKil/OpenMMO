@@ -8,6 +8,7 @@ import * as THREE from 'three'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 import {
   Fn,
+  Discard,
   uniform,
   uniformArray,
   texture,
@@ -60,6 +61,10 @@ export type SplatParams = {
   splatMap: THREE.Texture
   splatScale?: number
   sharedBrushUniforms?: SplatBrushUniforms
+  /** Shared hole uniforms — discards fragments inside a world-space rect
+   *  (e.g. dungeon entrances). When omitted, the material gets its own
+   *  inactive instance. */
+  sharedHoleUniforms?: SplatHoleUniforms
   /** Include grid/brush editor overlay in the shader. Default false. */
   includeEditorOverlay?: boolean
 }
@@ -81,6 +86,23 @@ export function createSplatBrushUniforms(): SplatBrushUniforms {
     brushRaise: uniform(1.0),
     brushToolMode: uniform(0.0),
     gridVisible: uniform(0.0),
+  }
+}
+
+/** Shared uniforms that punch a world-space rectangular hole in the terrain
+ *  (fragments inside the rect are discarded). Used to open up dungeon
+ *  entrances so the descending stairs aren't occluded by ground. */
+export interface SplatHoleUniforms {
+  /** (minX, minZ, maxX, maxZ) in world space. */
+  holeRect: UniformNode<'vec4', THREE.Vector4>
+  /** 0 = no hole, 1 = active. */
+  holeActive: UniformNode<'float', number>
+}
+
+export function createSplatHoleUniforms(): SplatHoleUniforms {
+  return {
+    holeRect: uniform(new THREE.Vector4(0, 0, 0, 0)),
+    holeActive: uniform(0.0),
   }
 }
 
@@ -116,6 +138,7 @@ export function makeSplatStandardMaterial({
   splatMap,
   splatScale = 1,
   sharedBrushUniforms,
+  sharedHoleUniforms,
   includeEditorOverlay = false,
 }: SplatParams) {
   // Splat bytes are integer indices — must NOT be bilinearly interpolated.
@@ -128,6 +151,10 @@ export function makeSplatStandardMaterial({
   const uTileScales = uniformArray(padTileScales(tileScales), 'float')
   const uTileSwapUvs = uniformArray(padTileSwapUvs(tileSwapUvs), 'float')
   const uSplatScale = uniform(splatScale)
+
+  // Always compiled in (single pipeline variant). Inactive by default, so
+  // the discard is a no-op for the vast majority of fragments.
+  const hole = sharedHoleUniforms ?? createSplatHoleUniforms()
 
   const brush = includeEditorOverlay
     ? {
@@ -264,6 +291,18 @@ export function makeSplatStandardMaterial({
 
   // ─── Color node ─────────────────────────────────────────
   const colorNode = Fn(() => {
+    // Punch a world-space hole (e.g. a dungeon entrance) so the descending
+    // stairs aren't occluded by terrain. World-space test → applies on
+    // whichever tile covers the entrance, no per-tile geometry changes.
+    Discard(
+      hole.holeActive
+        .greaterThan(0.5)
+        .and(vWorldXZ.x.greaterThanEqual(hole.holeRect.x))
+        .and(vWorldXZ.x.lessThanEqual(hole.holeRect.z))
+        .and(vWorldXZ.y.greaterThanEqual(hole.holeRect.y))
+        .and(vWorldXZ.y.lessThanEqual(hole.holeRect.w))
+    )
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function neighborDiffuse(n: any) {
       const cP = sampleAtlasAt(diffAtlasTex, n.pSlot).rgb
@@ -405,6 +444,8 @@ export function makeSplatStandardMaterial({
     ...(ormAtlasTex ? { ormAtlas: ormAtlasTex } : {}),
     uTileScales,
     uTileSwapUvs,
+    holeRect: hole.holeRect,
+    holeActive: hole.holeActive,
     ...(brush
       ? {
           brushCenter: brush.center,

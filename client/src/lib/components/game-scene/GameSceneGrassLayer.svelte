@@ -7,7 +7,12 @@
   import { TERRAIN_TILE_SIZE } from './terrain-utils'
   import type { TerrainGrassDataManager } from '../../managers/terrainGrassDataManager'
   import { windDebugVisible } from '../../stores/debugStore'
-  import { getThinnedInstanceData } from '../../utils/grass-data'
+  import {
+    getThinnedInstanceData,
+    removeGrassInRect,
+    type GrassPlacementData,
+  } from '../../utils/grass-data'
+  import { dungeonManager } from '../../managers/dungeonManager'
   import {
     SUB_CHUNK_SIZE,
     tileSubChunkRange,
@@ -709,6 +714,36 @@
   }
 
 
+  /** Strip grass that falls inside any dungeon entrance opening, so the
+   *  punched terrain hole isn't covered by blades. Entrances are static, so
+   *  this applies regardless of whether the dungeon is registered yet.
+   *
+   *  Gated by tile bounds: the per-blade scan only runs for the rare tile(s)
+   *  that actually overlap an entrance — every other tile bails after a cheap
+   *  rect test. A tile only keeps blades within [tileX*S ± S/2] (spillover is
+   *  discarded by isKeyInTileRange), so a non-overlapping rect can't touch any
+   *  kept blade — no margin needed. */
+  function applyDungeonExclusions(
+    data: GrassPlacementData,
+    tileX: number,
+    tileZ: number
+  ): GrassPlacementData {
+    const half = TERRAIN_TILE_SIZE / 2
+    const tMinX = tileX * TERRAIN_TILE_SIZE - half
+    const tMaxX = tileX * TERRAIN_TILE_SIZE + half
+    const tMinZ = tileZ * TERRAIN_TILE_SIZE - half
+    const tMaxZ = tileZ * TERRAIN_TILE_SIZE + half
+    let out = data
+    for (const r of dungeonManager.allEntranceHoleRects()) {
+      if (r.minX > tMaxX || r.maxX < tMinX || r.minZ > tMaxZ || r.maxZ < tMinZ) {
+        continue
+      }
+      const filtered = removeGrassInRect(out, r.minX, r.minZ, r.maxX, r.maxZ)
+      if (filtered) out = filtered
+    }
+    return out
+  }
+
   // ── Tile data lifecycle ─────────────────────────────────
   $effect(() => {
     const gMgr = grassDataManager
@@ -725,10 +760,13 @@
 
       gMgr
         .loadGrassData(tileX, tileZ)
-        .then((grassData) => {
+        .then((rawGrassData) => {
           if (!pendingTiles.has(tk)) return
           pendingTiles.delete(tk)
 
+          const grassData = rawGrassData
+            ? applyDungeonExclusions(rawGrassData, tileX, tileZ)
+            : rawGrassData
           if (grassData) {
             const shortChunks = partitionIntoSubChunks(getThinnedInstanceData(grassData, 'short'))
             const tallChunks = partitionIntoSubChunks(getThinnedInstanceData(grassData, 'tall'))
@@ -793,8 +831,9 @@
     if (!gMgr) return
 
     return gMgr.onTileUpdated((tileX, tileZ) => {
-      const grassData = gMgr.getCachedGrassData(tileX, tileZ)
-      if (!grassData) return
+      const rawGrassData = gMgr.getCachedGrassData(tileX, tileZ)
+      if (!rawGrassData) return
+      const grassData = applyDungeonExclusions(rawGrassData, tileX, tileZ)
 
       clearSubChunksForTile(tileX, tileZ)
 

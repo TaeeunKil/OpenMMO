@@ -17,10 +17,7 @@ import {
   dungeon_add_passability,
   dungeon_remove_passability,
 } from '../wasm/onlinerpg_shared'
-import {
-  currentDungeonDepth,
-  currentDungeonId,
-} from '../stores/dungeonStore'
+import { currentDungeonDepth, currentDungeonId } from '../stores/dungeonStore'
 import { DUNGEON_ENTRANCES } from '../data/dungeonDefs'
 
 export interface DungeonRoom {
@@ -88,10 +85,55 @@ function constants(): DungeonConstants {
   return consts
 }
 
+export interface DungeonRect {
+  minX: number
+  minZ: number
+  maxX: number
+  maxZ: number
+}
+
+/**
+ * World-space XZ rect of a shaft's surface opening — the footprint minus
+ * the one-cell entry landing row at the shallow end (so terrain/grass still
+ * meet the lip where the player steps in).
+ */
+function shaftHoleRect(
+  shaft: DungeonShaft,
+  originX: number,
+  originZ: number,
+  shaftW: number,
+  shaftLen: number
+): DungeonRect {
+  let minX: number, maxX: number, minZ: number, maxZ: number
+  if (shaft.alongZ) {
+    minX = shaft.x
+    maxX = shaft.x + shaftW
+    minZ = shaft.z
+    maxZ = shaft.z + shaftLen
+    if (shaft.reversed) maxZ -= LANDING_CELLS
+    else minZ += LANDING_CELLS
+  } else {
+    minX = shaft.x
+    maxX = shaft.x + shaftLen
+    minZ = shaft.z
+    maxZ = shaft.z + shaftW
+    if (shaft.reversed) maxX -= LANDING_CELLS
+    else minX += LANDING_CELLS
+  }
+  return {
+    minX: originX + minX,
+    minZ: originZ + minZ,
+    maxX: originX + maxX,
+    maxZ: originZ + maxZ,
+  }
+}
+
 class DungeonManager {
   private id: string | null = null
   private entrance: DungeonEntrance | null = null
   private layouts: DungeonFloorLayout[] = []
+  /** Cached surface-opening rects per entrance id (see allEntranceHoleRects). */
+  private entranceRectCache = new Map<string, DungeonRect>()
 
   get active(): boolean {
     return this.id !== null
@@ -189,10 +231,65 @@ class DungeonManager {
   }
 
   /**
+   * World-space XZ rect of the currently-registered dungeon's surface
+   * opening. Used by the terrain shader to discard fragments there, opening
+   * up the descending stairs. Null when no dungeon is registered.
+   */
+  entranceHoleRect(): DungeonRect | null {
+    const first = this.layoutAt(1)
+    if (!first || !this.entrance) return null
+    const { shaftW, shaftLen } = constants()
+    return shaftHoleRect(
+      first.upShaft,
+      this.originX,
+      this.originZ,
+      shaftW,
+      shaftLen
+    )
+  }
+
+  /**
+   * Surface-opening rects for *all* registry dungeons, independent of
+   * proximity registration. Layouts are generated once (deterministic from
+   * the entrance id) and the resulting rects cached. Used to suppress grass
+   * over entrances so the opening is always visible, even before the dungeon
+   * registers.
+   */
+  allEntranceHoleRects(): DungeonRect[] {
+    const out: DungeonRect[] = []
+    for (const e of DUNGEON_ENTRANCES) {
+      let rect = this.entranceRectCache.get(e.id)
+      if (!rect) {
+        // Defensive: if wasm isn't ready yet, skip this entrance without
+        // caching so a later call retries (rather than throwing and aborting
+        // the grass tile load).
+        try {
+          const { grid, shaftW, shaftLen } = constants()
+          const layouts = dungeon_layout(e.id) as DungeonFloorLayout[]
+          const first = layouts[0]
+          if (!first) continue
+          const ox = Math.floor(e.x) - grid / 2
+          const oz = Math.floor(e.z) - grid / 2
+          rect = shaftHoleRect(first.upShaft, ox, oz, shaftW, shaftLen)
+          this.entranceRectCache.set(e.id, rect)
+        } catch {
+          continue
+        }
+      }
+      out.push(rect)
+    }
+    return out
+  }
+
+  /**
    * Shaft run position in [0, shaftLen) measured from the entry (shallow)
    * end, or null when (x, z) is outside the shaft footprint.
    */
-  private shaftRunPos(shaft: DungeonShaft, x: number, z: number): number | null {
+  private shaftRunPos(
+    shaft: DungeonShaft,
+    x: number,
+    z: number
+  ): number | null {
     const { shaftW, shaftLen } = constants()
     const lx = x - this.originX - shaft.x
     const lz = z - this.originZ - shaft.z
@@ -270,7 +367,10 @@ class DungeonManager {
       for (const e of DUNGEON_ENTRANCES) {
         const dx = x - e.x
         const dz = z - e.z
-        if (dx * dx + dz * dz < ENTRANCE_REGISTER_DIST * ENTRANCE_REGISTER_DIST) {
+        if (
+          dx * dx + dz * dz <
+          ENTRANCE_REGISTER_DIST * ENTRANCE_REGISTER_DIST
+        ) {
           this.enter(e.id, { x: e.x, y: e.y, z: e.z })
           return
         }
