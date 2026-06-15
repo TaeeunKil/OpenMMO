@@ -13,9 +13,12 @@
  *   as cave dark. (The surface entrance is the one exception — it carries a
  *   gravel roof, always shown at depth 0; the player only descends the stairs,
  *   never stands inside, so it never needs to hide.)
- * - Camera-facing walls (south/west boundaries — solid at z+1 / x-1) are
- *   not emitted at all, mirroring housing's hidden "front" group: the
- *   player is always inside a dungeon.
+ * - Walls on all four sides are emitted as per-run meshes in their own
+ *   sub-group (WALL_RUN_GROUP_NAME); the dungeon layer fades any run to a
+ *   ghost while it occludes the player from the iso camera. Camera-facing
+ *   south/west runs fade often; the far north/east runs only when the layout
+ *   puts them between the camera and the player. Floor slab, chest and the
+ *   down-shaft stairs stay merged into the shared opaque mesh.
  * - Stair shafts render both directions per floor: the up shaft you
  *   arrived by (rising to +floorHeight) and the down shaft (descending
  *   to -floorHeight). Adjacent floors build the identical world-space
@@ -79,6 +82,11 @@ const SHADOW_CONTACT_LIFT = 0.02
 /** Name of the up-shaft stairs sub-group inside a floor group; the dungeon
  *  layer looks it up to fade it to a ghost when it occludes the player. */
 export const UP_SHAFT_GROUP_NAME = 'upShaftStairs'
+
+/** Scene-graph name of the wall-run sub-group (all four sides), for debugging.
+ *  Unlike the up-shaft group it is never looked up by name — the layer caches
+ *  the runs from the returned WallRun[] — so it stays module-private. */
+const WALL_RUN_GROUP_NAME = 'wallRuns'
 
 const SLAB_THICKNESS = 0.15
 /** Flat landing cells at shaft ends — must match dungeonManager.rampY. */
@@ -747,11 +755,21 @@ function collectShaftStairs(
   }
 }
 
+/** One straight wall run, built as its own mesh so the dungeon layer can fade
+ *  just this run to a ghost when it occludes the player. */
+export interface WallRun {
+  mesh: THREE.Mesh
+  /** Group-local AABB; the layer adds the floor group's world position. */
+  localAABB: THREE.Box3
+}
+
 export interface DungeonFloorGroup {
   group: THREE.Group
   /** Local-space AABB of the up-shaft stairs sub-group, for the layer's
    *  occlusion-fade test (add the group's world position to use it). */
   upShaftAABB: THREE.Box3
+  /** Per-side wall runs (all four directions), faded individually on occlusion. */
+  wallRuns: WallRun[]
 }
 
 /**
@@ -805,54 +823,8 @@ export function buildDungeonFloorGroup(
     }
   }
 
-  // --- Back walls (camera-away sides only): north edges (solid at z-1)
-  // merged into x-runs, east edges (solid at x+1) merged into z-runs.
-  // Shaft cells are skipped — their taller side walls are built with the
-  // stairs.
-  for (let z = 0; z < grid; z++) {
-    let runStart = -1
-    for (let x = 0; x <= grid; x++) {
-      const hasWall =
-        x < grid && carvedAt(x, z) && !carvedAt(x, z - 1) && !inAnyShaft(x, z)
-      if (hasWall && runStart < 0) runStart = x
-      if (!hasWall && runStart >= 0) {
-        const len = x - runStart
-        addBox(
-          entries,
-          DUNGEON_WALL_TEXTURE_IDX,
-          len,
-          ctx.wallHeight,
-          0.1,
-          runStart + len / 2,
-          ctx.wallHeight / 2 + SHADOW_CONTACT_LIFT,
-          z - 0.05
-        )
-        runStart = -1
-      }
-    }
-  }
-  for (let x = 0; x < grid; x++) {
-    let runStart = -1
-    for (let z = 0; z <= grid; z++) {
-      const hasWall =
-        z < grid && carvedAt(x, z) && !carvedAt(x + 1, z) && !inAnyShaft(x, z)
-      if (hasWall && runStart < 0) runStart = z
-      if (!hasWall && runStart >= 0) {
-        const len = z - runStart
-        addBox(
-          entries,
-          DUNGEON_WALL_TEXTURE_IDX,
-          0.1,
-          ctx.wallHeight,
-          len,
-          x + 1 + 0.05,
-          ctx.wallHeight / 2 + SHADOW_CONTACT_LIFT,
-          runStart + len / 2
-        )
-        runStart = -1
-      }
-    }
-  }
+  // Walls on all four sides are built lower down as per-run fade meshes (the
+  // dungeon layer ghosts any run that occludes the player), not merged here.
 
   // --- Treasure chest (final floor): a squat dark-wood box with a lid
   // ridge, sitting on the chest cell.
@@ -901,6 +873,116 @@ export function buildDungeonFloorGroup(
   addMergedMeshes(upGroup, upEntries)
   group.add(upGroup)
 
+  // --- Wall runs (all four sides): one mesh per straight run (a run breaks at
+  // a corner, a doorway gap or a shaft cell) in their own sub-group, so the
+  // dungeon layer can ghost just the runs that occlude the player. The
+  // camera-facing south/west runs fade often; the far north/east runs fade only
+  // when the layout puts them between the iso camera and the player. They are
+  // decorative — collision is server-side — so they cast no shadow (a ghosted
+  // run would otherwise drop a wall-less shadow on the floor) and ignore click
+  // raycasts (so click-to-move targets the floor behind them).
+  const wallRunGroup = new THREE.Group()
+  wallRunGroup.name = WALL_RUN_GROUP_NAME
+  const wallRuns: WallRun[] = []
+  const addWallRun = (
+    w: number,
+    h: number,
+    d: number,
+    cx: number,
+    cy: number,
+    cz: number
+  ) => {
+    const e: GeoEntry[] = []
+    addBox(e, DUNGEON_WALL_TEXTURE_IDX, w, h, d, cx, cy, cz)
+    const geo = e[0].geo
+    const mesh = new THREE.Mesh(
+      geo,
+      getHousingMaterial(DUNGEON_WALL_TEXTURE_IDX)
+    )
+    mesh.castShadow = false
+    mesh.receiveShadow = true
+    mesh.raycast = () => {}
+    mesh.userData.textureIndex = DUNGEON_WALL_TEXTURE_IDX
+    geo.computeBoundingBox()
+    wallRunGroup.add(mesh)
+    wallRuns.push({ mesh, localAABB: geo.boundingBox!.clone() })
+  }
+  // North/south edges merge into x-runs (one wall per row); the wall sits just
+  // past the carved cell's north (z − 0.05) or south (z + 1 + 0.05) face.
+  for (let z = 0; z < grid; z++) {
+    let northStart = -1
+    let southStart = -1
+    for (let x = 0; x <= grid; x++) {
+      const carved = x < grid && carvedAt(x, z) && !inAnyShaft(x, z)
+      const north = carved && !carvedAt(x, z - 1)
+      const south = carved && !carvedAt(x, z + 1)
+      if (north && northStart < 0) northStart = x
+      if (!north && northStart >= 0) {
+        const len = x - northStart
+        addWallRun(
+          len,
+          ctx.wallHeight,
+          0.1,
+          northStart + len / 2,
+          ctx.wallHeight / 2 + SHADOW_CONTACT_LIFT,
+          z - 0.05
+        )
+        northStart = -1
+      }
+      if (south && southStart < 0) southStart = x
+      if (!south && southStart >= 0) {
+        const len = x - southStart
+        addWallRun(
+          len,
+          ctx.wallHeight,
+          0.1,
+          southStart + len / 2,
+          ctx.wallHeight / 2 + SHADOW_CONTACT_LIFT,
+          z + 1 + 0.05
+        )
+        southStart = -1
+      }
+    }
+  }
+  // East/west edges merge into z-runs; the wall sits just past the carved cell's
+  // east (x + 1 + 0.05) or west (x − 0.05) face.
+  for (let x = 0; x < grid; x++) {
+    let eastStart = -1
+    let westStart = -1
+    for (let z = 0; z <= grid; z++) {
+      const carved = z < grid && carvedAt(x, z) && !inAnyShaft(x, z)
+      const east = carved && !carvedAt(x + 1, z)
+      const west = carved && !carvedAt(x - 1, z)
+      if (east && eastStart < 0) eastStart = z
+      if (!east && eastStart >= 0) {
+        const len = z - eastStart
+        addWallRun(
+          0.1,
+          ctx.wallHeight,
+          len,
+          x + 1 + 0.05,
+          ctx.wallHeight / 2 + SHADOW_CONTACT_LIFT,
+          eastStart + len / 2
+        )
+        eastStart = -1
+      }
+      if (west && westStart < 0) westStart = z
+      if (!west && westStart >= 0) {
+        const len = z - westStart
+        addWallRun(
+          0.1,
+          ctx.wallHeight,
+          len,
+          x - 0.05,
+          ctx.wallHeight / 2 + SHADOW_CONTACT_LIFT,
+          westStart + len / 2
+        )
+        westStart = -1
+      }
+    }
+  }
+  group.add(wallRunGroup)
+
   // Local-space occlusion AABB: the shaft footprint from this floor (y=0) up to
   // the floor above. The layer adds the group's world position before testing.
   const ur = shaftRect(layout.upShaft, ctx)
@@ -908,7 +990,7 @@ export function buildDungeonFloorGroup(
     new THREE.Vector3(ur.x, 0, ur.z),
     new THREE.Vector3(ur.x + ur.w, ctx.floorHeight, ur.z + ur.d)
   )
-  return { group, upShaftAABB }
+  return { group, upShaftAABB, wallRuns }
 }
 
 /**

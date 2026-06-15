@@ -22,6 +22,7 @@
     buildDungeonFloorGroup,
     disposeDungeonGroup,
     UP_SHAFT_GROUP_NAME,
+    type WallRun,
   } from '../../utils/dungeon-geometry'
   import { getGhostHousingMaterial } from '../../utils/housing-textures'
   import { isoCameraOccludesPlayer } from '../../utils/iso-occlusion'
@@ -57,6 +58,20 @@
   /** Ray inside the AABB before it counts as occluding (matches housing). */
   const MIN_OCCLUSION_DEPTH = 0.3
 
+  // ── Wall-run occlusion fade ──────────────────────────────
+  // Any wall run (all four sides) that ends up between the iso camera and the
+  // player is ghosted, per-run (per-run AABB, so the others stay solid). The
+  // runs are thin (0.1m), so the SW camera ray only ever crosses ~0.1 of one — a
+  // much smaller occlusion depth than the bulky up-shaft AABB.
+  interface WallRunFade {
+    mesh: THREE.Mesh
+    base: THREE.Material
+    ghost: THREE.Material
+    aabb: THREE.Box3
+  }
+  let wallRuns: WallRunFade[] = []
+  const WALL_RUN_MIN_OCCLUSION = 0.05
+
   function clearGroup() {
     if (currentGroup) {
       root.remove(currentGroup)
@@ -66,6 +81,7 @@
     upShaftMeshes = []
     upShaftAABB = null
     upShaftOccluded = false
+    wallRuns = []
   }
 
   /** Cache the up-shaft sub-group's meshes + world AABB for the fade pass.
@@ -83,6 +99,20 @@
         ghost: getGhostHousingMaterial(idx),
       })
     })
+  }
+
+  /** Cache each wall run's mesh, ghost material and world AABB for the per-run
+   *  fade pass. `group.position` is set before this is called. */
+  function cacheWallRuns(group: THREE.Group, runs: WallRun[]) {
+    for (const r of runs) {
+      const idx = r.mesh.userData.textureIndex as number
+      wallRuns.push({
+        mesh: r.mesh,
+        base: r.mesh.material as THREE.Material,
+        ghost: getGhostHousingMaterial(idx),
+        aabb: r.localAABB.clone().translate(group.position),
+      })
+    }
   }
 
   function clearEntranceGroup() {
@@ -215,6 +245,7 @@
     )
     root.add(currentGroup)
     cacheUpShaft(currentGroup, built.upShaftAABB)
+    cacheWallRuns(currentGroup, built.wallRuns)
   })
 
   onDestroy(() => {
@@ -244,6 +275,21 @@
         for (const m of upShaftMeshes) {
           m.mesh.material = occ ? m.ghost : m.base
         }
+      }
+    }
+
+    // Fade each wall run that occludes the player to a ghost. The mesh's current
+    // material is the single source of truth for its occluded state.
+    for (const w of wallRuns) {
+      const occ = isoCameraOccludesPlayer(
+        w.aabb,
+        playerX,
+        playerY,
+        playerZ,
+        WALL_RUN_MIN_OCCLUSION
+      )
+      if (occ !== (w.mesh.material === w.ghost)) {
+        w.mesh.material = occ ? w.ghost : w.base
       }
     }
 
