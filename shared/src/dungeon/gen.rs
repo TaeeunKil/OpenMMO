@@ -394,30 +394,36 @@ fn roll_spawns(rng: &mut ChaCha8Rng, layout: &FloorLayout) -> Vec<SpawnSpec> {
             z: boss_cell.1,
             monster_type: BOSS_MONSTER_TYPE.to_string(),
             is_boss: true,
+            // The treasure guardian hunts intruders on sight.
+            aggressive: true,
         });
     }
 
     let table = super::spawn_table(layout.depth);
-    let total_weight: u32 = table.iter().map(|(_, w)| w).sum();
+    let total_weight: u32 = table.iter().map(|e| e.weight).sum();
+    if total_weight == 0 {
+        return spawns;
+    }
     let count = rng.gen_range(5..=9) as usize;
 
     for _ in 0..count.min(candidates.len()) {
         let idx = rng.gen_range(0..candidates.len());
         let (x, z) = candidates.swap_remove(idx);
         let mut roll = rng.gen_range(0..total_weight);
-        let mut monster_type = table[0].0;
-        for (ty, w) in table {
-            if roll < *w {
-                monster_type = ty;
+        let mut chosen = &table[0];
+        for entry in table {
+            if roll < entry.weight {
+                chosen = entry;
                 break;
             }
-            roll -= w;
+            roll -= entry.weight;
         }
         spawns.push(SpawnSpec {
             x,
             z,
-            monster_type: monster_type.to_string(),
+            monster_type: chosen.monster_type.clone(),
             is_boss: false,
+            aggressive: chosen.aggressive,
         });
     }
 

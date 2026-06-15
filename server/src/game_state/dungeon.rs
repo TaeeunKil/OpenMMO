@@ -282,7 +282,7 @@ impl GameState {
         };
         let now = Self::now_ms();
 
-        let to_spawn: Vec<(usize, i32, i32, String)> = {
+        let to_spawn: Vec<(usize, i32, i32, String, bool)> = {
             let mut dungeons = self.dungeons.write().await;
             let Some(rt) = dungeons.get_mut(entrance_id) else {
                 return;
@@ -301,13 +301,19 @@ impl GameState {
                     // double-spawn the slot.
                     slot.alive_monster_id = Some(String::new());
                     let spec = &specs[i];
-                    claimed.push((i, spec.x, spec.z, spec.monster_type.clone()));
+                    claimed.push((
+                        i,
+                        spec.x,
+                        spec.z,
+                        spec.monster_type.clone(),
+                        spec.aggressive,
+                    ));
                 }
             }
             claimed
         };
 
-        for (slot_idx, cx, cz, monster_type) in to_spawn {
+        for (slot_idx, cx, cz, monster_type, aggressive) in to_spawn {
             let def_level = self
                 .monster_defs
                 .get(&monster_type)
@@ -323,6 +329,7 @@ impl GameState {
                     Some(owner.clone()),
                     -(depth as i8),
                     Some(level),
+                    aggressive,
                 )
                 .await;
 

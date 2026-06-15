@@ -70,6 +70,11 @@ const TOWN_MARGIN = 30 // keep spawns this far outside no-spawn zones too
 const WATER_MIN_HEIGHT = 0.3 // reject sea / submerged ground below this
 const MAX_SPAWN_ATTEMPTS = 12
 const DEFAULT_MONSTER_BEHAVIOR = 'brave'
+// Behavior tree for proactive (선공형) monsters; acquires targets on sight.
+// Overrides the monster type's default when the spawn is flagged aggressive.
+// Must match shared monster_ai::AGGRESSIVE_BEHAVIOR and a tree in
+// data-src/behavior_trees.json.
+const AGGRESSIVE_MONSTER_BEHAVIOR = 'aggressive'
 const MONSTER_POSITION_EPSILON = 0.001
 
 class MonsterManager {
@@ -165,6 +170,21 @@ class MonsterManager {
   }
 
   /**
+   * Behavior tree a monster we own should run. Aggressive (선공형) spawns
+   * acquire targets on sight, overriding the type's default timid/brave tree.
+   */
+  private resolveBehavior(
+    type: MonsterData['type'],
+    aggressive?: boolean
+  ): string {
+    if (aggressive) return AGGRESSIVE_MONSTER_BEHAVIOR
+    const monsterDef = (monstersJson as Record<string, { behavior?: string }>)[
+      type
+    ]
+    return monsterDef?.behavior ?? DEFAULT_MONSTER_BEHAVIOR
+  }
+
+  /**
    * MonsterAssigned handler: either a fresh spawn assigned to us or an
    * ownership handover of a monster we already track (dungeon floors
    * reassign AI when the previous owner leaves).
@@ -176,7 +196,8 @@ class MonsterManager {
     ownerId?: string,
     health?: number,
     maxHealth?: number,
-    floorLevel?: number
+    floorLevel?: number,
+    aggressive?: boolean
   ) {
     const existing = this.monsters.get(id)
     if (!existing) {
@@ -187,7 +208,8 @@ class MonsterManager {
         ownerId,
         health,
         maxHealth,
-        floorLevel
+        floorLevel,
+        aggressive
       )
       return
     }
@@ -201,9 +223,6 @@ class MonsterManager {
       ai_remove_brain(id)
       const def = getMonsterDef(type)
       this.ensureTemplatesLoaded()
-      const monsterDef = (
-        monstersJson as Record<string, { behavior?: string }>
-      )[type]
       const fl = existing.floorLevel ?? 0
       ai_create_brain({
         monsterId: id,
@@ -217,7 +236,7 @@ class MonsterManager {
         chaseRange: def?.chaseRange ?? 25,
         attackCooldown:
           def?.attackCooldown ?? DEFAULT_MONSTER_ATTACK_COOLDOWN_MS,
-        behavior: monsterDef?.behavior ?? DEFAULT_MONSTER_BEHAVIOR,
+        behavior: this.resolveBehavior(type, aggressive),
         pathFloor:
           fl < 0 && dungeonManager.active
             ? dungeonManager.passabilityFloor(-fl)
@@ -233,7 +252,8 @@ class MonsterManager {
     ownerId?: string,
     health?: number,
     maxHealth?: number,
-    floorLevel?: number
+    floorLevel?: number,
+    aggressive?: boolean
   ) {
     if (this.monsters.has(id)) return
 
@@ -264,10 +284,7 @@ class MonsterManager {
     const myPlayerId = gameState.currentPlayer?.id
     if (ownerId === myPlayerId) {
       this.ensureTemplatesLoaded()
-      const monsterDef = (
-        monstersJson as Record<string, { behavior?: string }>
-      )[type]
-      const behavior = monsterDef?.behavior ?? DEFAULT_MONSTER_BEHAVIOR
+      const behavior = this.resolveBehavior(type, aggressive)
       // Dungeon monsters path on their depth's passability floor so the
       // maze walls apply; surface monsters use the open overworld (0).
       const fl = floorLevel ?? 0

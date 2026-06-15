@@ -29,6 +29,7 @@ mod gen;
 mod tests;
 
 use serde::Serialize;
+use std::sync::LazyLock;
 
 use crate::pathfinding::{
     RuntimeFloorGrid, RuntimePassability, StairwellInfo, EDGE_E, EDGE_N, EDGE_S, EDGE_W,
@@ -168,6 +169,9 @@ pub struct SpawnSpec {
     pub z: i32,
     pub monster_type: String,
     pub is_boss: bool,
+    /// Proactive (선공형) monster: attacks players on sight instead of only
+    /// retaliating when hit. Designated per entry in [`spawn_table`].
+    pub aggressive: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -248,14 +252,87 @@ pub fn dungeon_cache_key(entrance_id: &str) -> String {
     format!("dungeon:{entrance_id}")
 }
 
-/// Weighted monster table per depth. Types must exist in monsters.csv.
-pub fn spawn_table(depth: u8) -> &'static [(&'static str, u32)] {
-    match depth {
-        1..=2 => &[("kobold", 1)],
-        3..=4 => &[("kobold", 2), ("goblin", 3)],
-        5..=8 => &[("goblin", 3), ("scp939", 2), ("orc", 2), ("orc_female", 1)],
-        _ => &[("orc", 3), ("orc_female", 2), ("scp939", 1)],
+/// One weighted entry in a depth's spawn table. `aggressive` makes that dungeon
+/// spawn proactive (선공형 — attacks on sight). Sourced per monster from the
+/// `dungeonMinDepth`/`dungeonMaxDepth`/`dungeonWeight`/`dungeonAggressive`
+/// columns of `data-src/monsters.csv`.
+#[derive(Debug, Clone)]
+pub struct SpawnEntry {
+    pub monster_type: String,
+    pub weight: u32,
+    pub aggressive: bool,
+}
+
+/// Per-depth spawn tables indexed by depth (`0..=MAX_DEPTH`), built once from
+/// the monster table. The dungeon generator runs in the shared crate on both
+/// native (server) and wasm32 (client), so the data is baked in at compile
+/// time via `include_str!` — runtime file IO would risk desync. We read the
+/// SOURCE csv directly (not the generated `data/monsters.json`) because that
+/// JSON is produced by a build script whose ordering relative to this crate
+/// isn't guaranteed; reading the csv keeps a `cargo build` after a csv edit
+/// self-consistent. Entries stay in csv row order — stable and identical on
+/// both sides — which the weighted pick in `roll_spawns` relies on.
+static SPAWN_TABLES: LazyLock<Vec<Vec<SpawnEntry>>> =
+    LazyLock::new(|| build_spawn_tables(include_str!("../../../data-src/monsters.csv")));
+
+fn build_spawn_tables(csv: &str) -> Vec<Vec<SpawnEntry>> {
+    let mut tables: Vec<Vec<SpawnEntry>> = vec![Vec::new(); MAX_DEPTH as usize + 1];
+    let mut lines = csv.lines();
+    let Some(header) = lines.next() else {
+        return tables;
+    };
+    let cols: Vec<&str> = header.split(',').map(str::trim).collect();
+    let col = |name: &str| {
+        cols.iter()
+            .position(|c| *c == name)
+            .unwrap_or_else(|| panic!("monsters.csv missing `{name}` column"))
+    };
+    let (id_col, min_col, max_col, weight_col, aggr_col) = (
+        col("id"),
+        col("dungeonMinDepth"),
+        col("dungeonMaxDepth"),
+        col("dungeonWeight"),
+        col("dungeonAggressive"),
+    );
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        let field = |i: usize| fields.get(i).map(|s| s.trim()).unwrap_or("");
+        // Only rows with a min depth are dungeon spawns; the boss is placed
+        // separately (see `roll_spawns`) and leaves these columns blank.
+        let Ok(min) = field(min_col).parse::<u8>() else {
+            continue;
+        };
+        // Blank (or anything past the deepest floor) means "down to the
+        // bottom"; values above MAX_DEPTH clamp rather than extend it.
+        let max = field(max_col)
+            .parse::<u8>()
+            .unwrap_or(MAX_DEPTH)
+            .min(MAX_DEPTH);
+        let weight = field(weight_col).parse::<u32>().unwrap_or(1).max(1);
+        let entry = SpawnEntry {
+            monster_type: field(id_col).to_string(),
+            weight,
+            aggressive: field(aggr_col) == "true",
+        };
+        for depth in min..=max {
+            tables[depth as usize].push(entry.clone());
+        }
     }
+    tables
+}
+
+/// Weighted monster entries that can spawn at `depth`, in stable csv order, or
+/// an empty slice if none cover it. Tune via the `dungeon*` columns of
+/// monsters.csv.
+pub fn spawn_table(depth: u8) -> &'static [SpawnEntry] {
+    SPAWN_TABLES
+        .get(depth as usize)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// Effective monster level at a given depth. Shallow floors use the

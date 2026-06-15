@@ -41,6 +41,7 @@ fn make_monster(id: &str, position: Position, floor_level: i8) -> crate::types::
         max_health: 10,
         floor_level,
         level_override: None,
+        aggressive: false,
         last_attack_at: 0,
     }
 }

@@ -2,8 +2,8 @@
 
 use onlinerpg_shared::monster_ai::{
     self, AiCommand, BehaviorTree, CachePathProvider, MonsterBrain, NearbyPlayer,
-    DEFAULT_ATTACK_COOLDOWN_MS, DEFAULT_ATTACK_RANGE, DEFAULT_BEHAVIOR, DEFAULT_CHASE_RANGE,
-    DEFAULT_RUN_SPEED, DEFAULT_WALK_SPEED,
+    AGGRESSIVE_BEHAVIOR, DEFAULT_ATTACK_COOLDOWN_MS, DEFAULT_ATTACK_RANGE, DEFAULT_BEHAVIOR,
+    DEFAULT_CHASE_RANGE, DEFAULT_RUN_SPEED, DEFAULT_WALK_SPEED,
 };
 use onlinerpg_shared::pathfinding::PassabilityCache;
 use onlinerpg_shared::{ClientMessage, Monster, Player};
@@ -136,10 +136,16 @@ impl MonsterAiManager {
     /// Register a newly assigned monster.
     pub fn add_monster(&mut self, monster: &Monster) {
         info!(
-            "Monster AI: managing {} (type={})",
-            monster.id, monster.monster_type
+            "Monster AI: managing {} (type={}, aggressive={})",
+            monster.id, monster.monster_type, monster.aggressive
         );
-        let behavior = self.behavior_for(&monster.monster_type);
+        // Aggressive (선공형) spawns acquire targets on sight regardless of the
+        // type's default timid/brave behavior.
+        let behavior = if monster.aggressive {
+            AGGRESSIVE_BEHAVIOR.to_string()
+        } else {
+            self.behavior_for(&monster.monster_type)
+        };
         let movement = self
             .type_to_movement
             .get(&monster.monster_type)

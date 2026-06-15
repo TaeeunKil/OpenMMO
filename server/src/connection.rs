@@ -574,7 +574,15 @@ async fn handle_client_message(
                         position.x, position.z, monster_type
                     );
                 } else if let Some(monster) = game_state
-                    .spawn_monster(monster_type, position, rotation, Some(id.clone()), 0, None)
+                    .spawn_monster(
+                        monster_type,
+                        position,
+                        rotation,
+                        Some(id.clone()),
+                        0,
+                        None,
+                        false,
+                    )
                     .await
                 {
                     game_state

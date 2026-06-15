@@ -27,6 +27,10 @@ const DEFAULT_RETURN_ARRIVE_DIST: f32 = 5.0;
 const DEFAULT_PATH_RECALC_MS: f32 = 500.0;
 const DEFAULT_TARGET_MOVE_THRESHOLD: f32 = 3.0;
 pub const DEFAULT_BEHAVIOR: &str = "brave";
+/// Behavior tree used by proactive (선공형) monsters that acquire and attack
+/// targets on sight. Selected when `Monster::aggressive` is set, overriding the
+/// monster type's configured behavior.
+pub const AGGRESSIVE_BEHAVIOR: &str = "aggressive";
 
 // ---------------------------------------------------------------------------
 // BehaviorTree — loaded from data-src/behavior_trees.json

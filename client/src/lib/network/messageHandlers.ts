@@ -384,7 +384,8 @@ export function handleServerMessage(
               monster.owner_id,
               monster.health,
               monster.max_health,
-              monster.floor_level
+              monster.floor_level,
+              monster.aggressive
             )
           }
         )
@@ -419,7 +420,8 @@ export function handleServerMessage(
         monster.owner_id,
         monster.health,
         monster.max_health,
-        monster.floor_level
+        monster.floor_level,
+        monster.aggressive
       )
       break
     }
@@ -446,7 +448,8 @@ export function handleServerMessage(
         assigned.owner_id,
         assigned.health,
         assigned.max_health,
-        assigned.floor_level
+        assigned.floor_level,
+        assigned.aggressive
       )
       break
     }

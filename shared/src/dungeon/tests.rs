@@ -64,8 +64,12 @@ fn golden_layout_hash() {
     );
 }
 
-// Captured from the first blessed run; see golden_layout_hash.
-const GOLDEN_OLD_CRYPT_HASH: u64 = 0x989d_59db_c9ba_9414;
+// Captured from the first blessed run; see golden_layout_hash. Re-blessed when
+// the spawn table moved from depth-band arrays (dungeon_spawns.json) to the
+// per-monster `dungeon*` columns of monsters.csv: same monster presence per
+// depth, but weighted-selection order now follows csv row order, so the picks
+// (and thus the hash) shift.
+const GOLDEN_OLD_CRYPT_HASH: u64 = 0x7166_7f71_2683_346e;
 
 #[test]
 fn structure_invariants_many_seeds() {

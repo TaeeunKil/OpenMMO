@@ -82,6 +82,10 @@ pub struct Monster {
     /// monster definition's level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level_override: Option<u8>,
+    /// Proactive (선공형) monster: attacks players on sight rather than only
+    /// retaliating when hit. Drives behavior-tree selection on the agent-client.
+    #[serde(default)]
+    pub aggressive: bool,
     #[serde(skip)]
     pub last_attack_at: u64,
 }

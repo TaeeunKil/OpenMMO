@@ -48,6 +48,9 @@ export type ServerMonster = {
   /** 0 = overworld, 1..3 housing floors, negative = dungeon depth. Always
    *  sent by the server (shared Monster::floor_level). */
   floor_level: number
+  /** Proactive (선공형): attacks on sight rather than only retaliating.
+   *  Drives behavior-tree selection for monsters we own. */
+  aggressive?: boolean
 }
 
 export type AccountCharacter = {

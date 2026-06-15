@@ -193,6 +193,83 @@
           }
         ]
       }
+    },
+    "aggressive": {
+      "description": "Proactive (선공형): acquires the nearest target within sight range and attacks on sight, holds ground, and does not flee at low health.",
+      "root": {
+        "type": "selector",
+        "children": [
+          {
+            "type": "sequence",
+            "children": [
+              {
+                "type": "condition",
+                "name": "is_beyond_leash",
+                "params": {
+                  "range": 50.0
+                }
+              },
+              {
+                "type": "condition",
+                "name": "chance",
+                "params": {
+                  "probability": 0.7
+                }
+              },
+              {
+                "type": "action",
+                "name": "return_to_spawn"
+              }
+            ]
+          },
+          {
+            "type": "sequence",
+            "children": [
+              {
+                "type": "condition",
+                "name": "target_in_range"
+              },
+              {
+                "type": "action",
+                "name": "attack_target"
+              }
+            ]
+          },
+          {
+            "type": "sequence",
+            "children": [
+              {
+                "type": "condition",
+                "name": "target_in_range"
+              },
+              {
+                "type": "action",
+                "name": "chase_target"
+              }
+            ]
+          },
+          {
+            "type": "sequence",
+            "children": [
+              {
+                "type": "condition",
+                "name": "chance",
+                "params": {
+                  "probability": 0.3
+                }
+              },
+              {
+                "type": "action",
+                "name": "wander"
+              }
+            ]
+          },
+          {
+            "type": "action",
+            "name": "idle"
+          }
+        ]
+      }
     }
   }
 }

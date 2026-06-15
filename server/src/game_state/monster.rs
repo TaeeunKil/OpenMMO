@@ -28,6 +28,7 @@ impl super::GameState {
         owner_id: Option<String>,
         floor_level: i8,
         level_override: Option<u8>,
+        aggressive: bool,
     ) -> Option<crate::types::Monster> {
         let max_total = crate::world_config::world_config().max_monsters_total as usize;
         let max_per_player = if floor_level < 0 {
@@ -102,6 +103,7 @@ impl super::GameState {
             max_health: health,
             floor_level,
             level_override,
+            aggressive,
             last_attack_at: 0,
         };
 
