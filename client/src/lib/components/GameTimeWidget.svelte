@@ -23,6 +23,7 @@
 
 <script lang="ts">
   import { calendarVisible } from '../stores/debugStore'
+  import { isUnderground } from '../stores/dungeonStore'
   import { getSolarDaylightWindow } from '../utils/celestialSimulation'
   import {
     type MoonDefinition,
@@ -269,17 +270,19 @@
     return seasonalOffset + rotationOffset
   })
   const moonVisuals = $derived(
-    MOONS.map((moon) =>
-      getMoonVisualState(
-        moon,
-        gameTimeState.hour,
-        absoluteDayIndex,
-        sunVisual.isDaylight,
-        sunVisual.xPercent,
-        gameTimeState.date.month,
-        gameTimeState.date.day
-      )
-    )
+    $isUnderground
+      ? []
+      : MOONS.map((moon) =>
+          getMoonVisualState(
+            moon,
+            gameTimeState.hour,
+            absoluteDayIndex,
+            sunVisual.isDaylight,
+            sunVisual.xPercent,
+            gameTimeState.date.month,
+            gameTimeState.date.day
+          )
+        )
   )
 
   $effect(() => {
@@ -295,62 +298,66 @@
     </div>
   {/if}
   <div class="sky-track">
-    <div
-      class="night-sky"
-      style="background-position-x: {nightSkyOffsetPx()}px; opacity: {1 - dayFactor}"
-    ></div>
-    <img
-      class="horizon"
-      src="/icons/horizon.png"
-      alt=""
-      style="opacity: {dayFactor * (1 - twilightBlend)}"
-    />
-    <img
-      class="horizon"
-      src="/icons/horizon-sunset.png"
-      alt=""
-      style="opacity: {twilightBlend}"
-    />
-    {#if sunVisual.isDaylight}
+    {#if $isUnderground}
+      <img class="horizon dungeon" src="/icons/horizon-dungeon.png" alt="" />
+    {:else}
+      <div
+        class="night-sky"
+        style="background-position-x: {nightSkyOffsetPx()}px; opacity: {1 - dayFactor}"
+      ></div>
       <img
-        class="sun"
-        src="/icons/sun.png"
-        alt="Sun"
-        style={`--sun-x:${sunVisual.xPercent}%; --sun-y:${sunVisual.yPercent}%`}
+        class="horizon"
+        src="/icons/horizon.png"
+        alt=""
+        style="opacity: {dayFactor * (1 - twilightBlend)}"
+      />
+      <img
+        class="horizon"
+        src="/icons/horizon-sunset.png"
+        alt=""
+        style="opacity: {twilightBlend}"
+      />
+      {#if sunVisual.isDaylight}
+        <img
+          class="sun"
+          src="/icons/sun.png"
+          alt="Sun"
+          style={`--sun-x:${sunVisual.xPercent}%; --sun-y:${sunVisual.yPercent}%`}
+        />
+      {/if}
+      {#each moonVisuals as moon (moon.id)}
+        <canvas
+          class="moon"
+          aria-label={`${moon.displayName} Moon`}
+          use:moonPhaseCanvasAction={{
+            moonId: moon.id,
+            illumination: moon.illumination,
+            isWaxing: moon.isWaxing,
+            sizePx: moon.sizePx,
+            isDaylight: sunVisual.isDaylight,
+          }}
+          style={`--moon-x:${moon.xPercent}%; --moon-y:${moon.yPercent}%; --moon-size:${moon.sizePx}px; --moon-opacity:${moon.opacity}; --moon-hue:${moon.hueRotateDeg}deg; --moon-saturation:${moon.saturation}; --moon-glow:${getMoonGlowFilter(moon, sunVisual.isDaylight)};`}
+        ></canvas>
+      {/each}
+      <img
+        class="horizon-front"
+        src="/icons/horizon-night-front.png"
+        alt=""
+        style="opacity: {1 - dayFactor}"
+      />
+      <img
+        class="horizon-front"
+        src="/icons/horizon-sunset-front.png"
+        alt=""
+        style="opacity: {twilightBlend}"
+      />
+      <img
+        class="horizon-front"
+        src="/icons/horizon-front.png"
+        alt=""
+        style="opacity: {dayFactor * (1 - twilightBlend)}"
       />
     {/if}
-    {#each moonVisuals as moon (moon.id)}
-      <canvas
-        class="moon"
-        aria-label={`${moon.displayName} Moon`}
-        use:moonPhaseCanvasAction={{
-          moonId: moon.id,
-          illumination: moon.illumination,
-          isWaxing: moon.isWaxing,
-          sizePx: moon.sizePx,
-          isDaylight: sunVisual.isDaylight,
-        }}
-        style={`--moon-x:${moon.xPercent}%; --moon-y:${moon.yPercent}%; --moon-size:${moon.sizePx}px; --moon-opacity:${moon.opacity}; --moon-hue:${moon.hueRotateDeg}deg; --moon-saturation:${moon.saturation}; --moon-glow:${getMoonGlowFilter(moon, sunVisual.isDaylight)};`}
-      ></canvas>
-    {/each}
-    <img
-      class="horizon-front"
-      src="/icons/horizon-night-front.png"
-      alt=""
-      style="opacity: {1 - dayFactor}"
-    />
-    <img
-      class="horizon-front"
-      src="/icons/horizon-sunset-front.png"
-      alt=""
-      style="opacity: {twilightBlend}"
-    />
-    <img
-      class="horizon-front"
-      src="/icons/horizon-front.png"
-      alt=""
-      style="opacity: {dayFactor * (1 - twilightBlend)}"
-    />
   </div>
 </div>
 
@@ -426,6 +433,10 @@
     object-fit: fill;
     opacity: 0.95;
     z-index: 1;
+  }
+
+  .horizon.dungeon {
+    opacity: 1;
   }
 
   .sun {
