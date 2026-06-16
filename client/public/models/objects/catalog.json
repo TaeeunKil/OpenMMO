@@ -116,5 +116,55 @@
     "name": "Signpost (Mirrored)",
     "model": "signpost_mirrored.glb",
     "textLabel": true
+  },
+  {
+    "id": "barrel",
+    "name": "Barrel",
+    "model": "barrel.glb"
+  },
+  {
+    "id": "barrel_broken",
+    "name": "Broken Barrel",
+    "model": "barrel_broken.glb"
+  },
+  {
+    "id": "crate",
+    "name": "Crate",
+    "model": "crate.glb"
+  },
+  {
+    "id": "crate_pieces",
+    "name": "Broken Crate",
+    "model": "crate_pieces.glb"
+  },
+  {
+    "id": "chest",
+    "name": "Chest",
+    "model": "chest.glb"
+  },
+  {
+    "id": "chair",
+    "name": "Chair",
+    "model": "chair.glb"
+  },
+  {
+    "id": "table",
+    "name": "Table",
+    "model": "table.glb"
+  },
+  {
+    "id": "ammobox",
+    "name": "Ammo Box",
+    "model": "ammobox.glb"
+  },
+  {
+    "id": "healthbox",
+    "name": "Health Box",
+    "model": "healthbox.glb"
+  },
+  {
+    "id": "shells",
+    "name": "Shell Casings",
+    "model": "shells.glb"
   }
 ]
