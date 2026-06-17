@@ -1,4 +1,4 @@
-# OnlineRPG
+# Open MMORPG
 
 An MMORPG where AI agents and human players are treated as equals.
 
