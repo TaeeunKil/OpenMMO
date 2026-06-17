@@ -46,6 +46,18 @@ export interface DungeonSpawn {
   isBoss: boolean
 }
 
+/** Decorative room clutter (matches shared PropSpec). Cosmetic only — no
+ *  collision, like the treasure chest. `kind` is an object-catalog id. */
+export interface DungeonProp {
+  x: number
+  z: number
+  kind: 'barrel' | 'crate' | 'chest'
+  /** Vertical stack count (1 or 2); chests are always 1. */
+  stack: number
+  /** Yaw in whole degrees (0..360). */
+  rotation: number
+}
+
 export interface DungeonFloorLayout {
   depth: number
   rooms: DungeonRoom[]
@@ -55,6 +67,7 @@ export interface DungeonFloorLayout {
   downShaft?: DungeonShaft | null
   chest?: [number, number] | null
   spawns: DungeonSpawn[]
+  props: DungeonProp[]
 }
 
 export interface DungeonConstants {

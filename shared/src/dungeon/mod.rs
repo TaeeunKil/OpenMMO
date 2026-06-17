@@ -180,6 +180,31 @@ pub struct SpawnSpec {
     pub aggressive: bool,
 }
 
+/// Decorative clutter prop dropped into a room. Purely cosmetic — like the
+/// treasure chest it carries no collision (it's never added to the passability
+/// grid), so placement only has to read well, not gate movement. The string
+/// variants match the object-catalog ids (`barrel`/`crate`/`chest`) the client
+/// loads the GLB for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PropKind {
+    Barrel,
+    Crate,
+    Chest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropSpec {
+    pub x: i32,
+    pub z: i32,
+    pub kind: PropKind,
+    /// How many of `kind` are stacked vertically (1 or 2). Chests never stack.
+    pub stack: u8,
+    /// Yaw in whole degrees (0..360); jitters the model for variety.
+    pub rotation: u16,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FloorLayout {
@@ -195,6 +220,9 @@ pub struct FloorLayout {
     /// Treasure chest cell, only on the final floor.
     pub chest: Option<(i32, i32)>,
     pub spawns: Vec<SpawnSpec>,
+    /// Decorative barrels/crates/chests clustered in room corners. Cosmetic
+    /// only (no collision) — see [`PropSpec`].
+    pub props: Vec<PropSpec>,
 }
 
 impl FloorLayout {
@@ -419,6 +447,10 @@ pub fn monster_level_for_depth(def_level: u8, depth: u8) -> u8 {
     }
 }
 
+/// All four edge bits set: a fully sealed, impassable cell. Used to turn a
+/// decorative prop's cell into a 1×1 collision pillar (see `roll_props`).
+pub(crate) const EDGE_ALL: u8 = EDGE_N | EDGE_E | EDGE_S | EDGE_W;
+
 /// Edge-bitmask cells for one floor, derived from its carved mask plus walls
 /// turning each stair shaft into a dead-end whose only opening on this floor is
 /// the landing this floor stands on. The shaft footprint sits inside a room, so
@@ -532,6 +564,19 @@ pub fn floor_passability_cells(layout: &FloorLayout) -> Vec<u8> {
     wall_shaft(&layout.up_shaft, true);
     if let Some(ref down) = layout.down_shaft {
         wall_shaft(down, false);
+    }
+
+    // Decorative props are solid obstacles: seal every edge of their cell so a
+    // player or monster can neither enter nor leave it. Sealing the prop cell
+    // alone is enough — the move check ORs both cells' edge bits, so it becomes
+    // a 1×1 pillar. `prop_cell_ok` keeps props off corridor mouths and stair
+    // landings, but those local rules can't guarantee global connectivity on
+    // their own, so `roll_props` runs a reachability backstop (with each prop's
+    // seal applied here) and rejects any prop that would close a route.
+    for p in &layout.props {
+        if p.x >= 0 && p.x < GRID && p.z >= 0 && p.z < GRID {
+            cells[(p.x + p.z * GRID) as usize] |= EDGE_ALL;
+        }
     }
 
     cells

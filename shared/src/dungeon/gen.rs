@@ -8,8 +8,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::{
-    FloorLayout, Room, SpawnSpec, StairShaft, BOSS_MONSTER_TYPE, GRID, MAX_DEPTH, MIN_DEPTH,
-    SHAFT_LEN, SHAFT_W,
+    FloorLayout, PropKind, PropSpec, Room, SpawnSpec, StairShaft, BOSS_MONSTER_TYPE, GRID,
+    MAX_DEPTH, MIN_DEPTH, SHAFT_LEN, SHAFT_W,
 };
 
 const ROOM_MIN: i32 = 9;
@@ -19,6 +19,17 @@ const SHAFT_ROOM_AXIAL: i32 = SHAFT_LEN + 2;
 const FLOOR_ATTEMPTS: u32 = 30;
 const ROOM_PLACE_ATTEMPTS: u32 = 60;
 const SPAWN_CLEAR_RADIUS: i32 = 3;
+
+/// Percent of rooms that stay empty of decorative clutter.
+const EMPTY_ROOM_PCT: i32 = 30;
+/// Per-room clutter count is drawn from this inclusive range (capped by how
+/// many wall/corner cells the room actually has).
+const PROPS_PER_ROOM: std::ops::RangeInclusive<i32> = 5..=10;
+/// Percent chance each prop is drawn from the corner pool rather than a plain
+/// wall cell, when both are available — "주로 구석쪽으로".
+const CORNER_BIAS: i32 = 80;
+/// Percent chance a barrel/crate prop is doubled into a 2-high stack.
+const PROP_STACK_PCT: i32 = 35;
 
 const DEPTH_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
@@ -158,6 +169,7 @@ fn try_generate_floor(
         down_shaft,
         chest,
         spawns: Vec::new(),
+        props: Vec::new(),
     };
 
     if !floor_is_connected(&layout) {
@@ -165,6 +177,7 @@ fn try_generate_floor(
     }
 
     layout.spawns = roll_spawns(rng, &layout);
+    layout.props = roll_props(rng, &layout);
     Some(layout)
 }
 
@@ -265,13 +278,18 @@ fn carve_corridor(carved: &mut [bool], from: (i32, i32), to: (i32, i32)) {
     }
 }
 
-/// Edge-aware reachability check from the up-shaft exit landing. Walks
-/// the same edge bitmasks real collision uses, treats stair-shaft
-/// interior cells as blocked (they're only traversable vertically), and
-/// requires every room center, the down-shaft entry, and the chest to be
-/// reachable.
-fn floor_is_connected(layout: &FloorLayout) -> bool {
-    let cells = super::floor_passability_cells(layout);
+/// Cells reachable from the up-shaft exit landing over a given edge-bitmask
+/// grid. Walks the same edges real collision uses and treats stair-shaft
+/// interior cells as blocked (they're only traversable vertically). Taking
+/// `cells` as a parameter lets prop placement re-run this with props sealed in.
+fn floor_reachable(
+    layout: &FloorLayout,
+    cells: &[u8],
+    visited: &mut [bool],
+    queue: &mut std::collections::VecDeque<(i32, i32)>,
+) {
+    visited.iter_mut().for_each(|v| *v = false);
+    queue.clear();
     let start = layout.up_shaft.exit_cell();
 
     let is_interior = |x: i32, z: i32| -> bool {
@@ -303,8 +321,6 @@ fn floor_is_connected(layout: &FloorLayout) -> bool {
         false
     };
 
-    let mut visited = vec![false; (GRID * GRID) as usize];
-    let mut queue = std::collections::VecDeque::new();
     visited[(start.0 + start.1 * GRID) as usize] = true;
     queue.push_back(start);
 
@@ -336,7 +352,11 @@ fn floor_is_connected(layout: &FloorLayout) -> bool {
             queue.push_back((nx, nz));
         }
     }
+}
 
+/// Whether every room center, the down-shaft entry, and the chest are in a
+/// reachable set produced by [`floor_reachable`].
+fn floor_targets_reachable(layout: &FloorLayout, visited: &[bool]) -> bool {
     let reachable = |cell: (i32, i32)| visited[(cell.0 + cell.1 * GRID) as usize];
 
     for room in &layout.rooms {
@@ -357,12 +377,20 @@ fn floor_is_connected(layout: &FloorLayout) -> bool {
     true
 }
 
+/// Edge-aware reachability gate run during generation (before props exist):
+/// every room center, the down-shaft entry, and the chest must be reachable
+/// from the up-shaft exit landing.
+fn floor_is_connected(layout: &FloorLayout) -> bool {
+    let cells = super::floor_passability_cells(layout);
+    let mut visited = vec![false; (GRID * GRID) as usize];
+    let mut queue = std::collections::VecDeque::new();
+    floor_reachable(layout, &cells, &mut visited, &mut queue);
+    floor_targets_reachable(layout, &visited)
+}
+
 fn roll_spawns(rng: &mut ChaCha8Rng, layout: &FloorLayout) -> Vec<SpawnSpec> {
     let exit = layout.up_shaft.exit_cell();
-    let in_shaft = |x: i32, z: i32| {
-        layout.up_shaft.contains(x, z)
-            || layout.down_shaft.as_ref().is_some_and(|s| s.contains(x, z))
-    };
+    let in_shaft = |x: i32, z: i32| cell_in_any_shaft(layout, x, z);
 
     // Deterministic candidate order: row-major scan.
     let mut candidates: Vec<(i32, i32)> = Vec::new();
@@ -433,6 +461,189 @@ fn roll_spawns(rng: &mut ChaCha8Rng, layout: &FloorLayout) -> Vec<SpawnSpec> {
     }
 
     spawns
+}
+
+fn cell_in_any_room(layout: &FloorLayout, x: i32, z: i32) -> bool {
+    layout
+        .rooms
+        .iter()
+        .any(|r| x >= r.x && x < r.x + r.w && z >= r.z && z < r.z + r.d)
+}
+
+fn cell_in_any_shaft(layout: &FloorLayout, x: i32, z: i32) -> bool {
+    layout.up_shaft.contains(x, z) || layout.down_shaft.as_ref().is_some_and(|s| s.contains(x, z))
+}
+
+/// Carved floor that belongs to a connecting corridor (not a room, not a shaft).
+fn cell_is_corridor(layout: &FloorLayout, x: i32, z: i32) -> bool {
+    layout.is_carved(x, z) && !cell_in_any_room(layout, x, z) && !cell_in_any_shaft(layout, x, z)
+}
+
+/// Number of orthogonal neighbours that are solid rock (uncarved). 0 = open
+/// floor, 1 = flush against a wall, ≥2 = a corner nook.
+fn wall_sides(layout: &FloorLayout, x: i32, z: i32) -> u8 {
+    let mut n = 0;
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        if !layout.is_carved(x + dx, z + dz) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Whether `(x, z)` is a sound spot to drop a clutter prop: carved room floor,
+/// clear of the stairs/chest/monsters, and not standing in a doorway. The last
+/// rule is the whole point of the placement constraints — a prop may hug a wall
+/// or sit beside the stair shaft, but must never block a corridor mouth or the
+/// landing cell you step through to take the stairs.
+fn prop_cell_ok(
+    layout: &FloorLayout,
+    landings: &[(i32, i32)],
+    taken: &[bool],
+    x: i32,
+    z: i32,
+) -> bool {
+    if !layout.is_carved(x, z) || cell_in_any_shaft(layout, x, z) {
+        return false;
+    }
+    if layout.chest == Some((x, z)) || taken[(x + z * GRID) as usize] {
+        return false;
+    }
+    if layout.spawns.iter().any(|s| s.x == x && s.z == z) {
+        return false;
+    }
+    // Don't choke a corridor entrance or a stair-landing approach: reject any
+    // cell orthogonally touching a corridor cell or a landing cell. Cells beside
+    // the (walled-off) shaft body are fine — "계단 옆쪽에 붙이는 것은 괜찮음".
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let (nx, nz) = (x + dx, z + dz);
+        if cell_is_corridor(layout, nx, nz) || landings.iter().any(|&l| l == (nx, nz)) {
+            return false;
+        }
+    }
+    true
+}
+
+fn pick_prop_kind(rng: &mut ChaCha8Rng) -> PropKind {
+    // Barrels and crates are the common dungeon clutter; chests are the rare
+    // find. Weighted 5 : 4 : 2 over a draw of 11.
+    match rng.gen_range(0..11) {
+        0..=4 => PropKind::Barrel,
+        5..=8 => PropKind::Crate,
+        _ => PropKind::Chest,
+    }
+}
+
+/// Scatter a few decorative barrels/crates/chests through the rooms, biased
+/// toward corners and walls. Props are *solid* — [`floor_passability_cells`]
+/// seals their cell — so placement keeps corridor mouths and stair landings
+/// clear (see [`prop_cell_ok`]) and, as a backstop, rejects any individual prop
+/// that would wall a room off (re-checking reachability with it sealed). Runs
+/// after the layout is otherwise final. Deterministic: rooms visited in order,
+/// candidate cells gathered row-major, every random draw integer, and the
+/// connectivity check is pure — same seed, same clutter on server and client.
+fn roll_props(rng: &mut ChaCha8Rng, layout: &FloorLayout) -> Vec<PropSpec> {
+    // Landing cells (this floor's own up-shaft exit row + the down-shaft entry
+    // row): the spots a prop in front of would wall off the stairs.
+    let mut landings: Vec<(i32, i32)> = Vec::new();
+    for w in 0..SHAFT_W {
+        landings.push(layout.up_shaft.step_cell(SHAFT_LEN - 1, w));
+    }
+    if let Some(ref down) = layout.down_shaft {
+        for w in 0..SHAFT_W {
+            landings.push(down.step_cell(0, w));
+        }
+    }
+
+    let mut taken = vec![false; (GRID * GRID) as usize];
+    let mut props = Vec::new();
+    // Base passability for the connectivity backstop. `layout.props` is empty at
+    // this point, so this has no prop seals yet; we add each kept prop's seal as
+    // we commit it and test a tentative seal before committing. The BFS buffers
+    // are allocated once and reused across every tentative check.
+    let mut cells = super::floor_passability_cells(layout);
+    let mut visited = vec![false; (GRID * GRID) as usize];
+    let mut queue = std::collections::VecDeque::new();
+
+    for room in &layout.rooms {
+        if rng.gen_range(0..100) < EMPTY_ROOM_PCT {
+            continue;
+        }
+
+        // Partition the room's eligible cells into corner nooks and plain wall
+        // cells (row-major scan keeps the order stable across builds).
+        let mut corners: Vec<(i32, i32)> = Vec::new();
+        let mut edges: Vec<(i32, i32)> = Vec::new();
+        for z in room.z..room.z + room.d {
+            for x in room.x..room.x + room.w {
+                if !prop_cell_ok(layout, &landings, &taken, x, z) {
+                    continue;
+                }
+                match wall_sides(layout, x, z) {
+                    n if n >= 2 => corners.push((x, z)),
+                    1 => edges.push((x, z)),
+                    _ => {}
+                }
+            }
+        }
+        if corners.is_empty() && edges.is_empty() {
+            continue;
+        }
+
+        let target = rng.gen_range(PROPS_PER_ROOM);
+        for _ in 0..target {
+            // Prefer a corner; fall back to a wall cell (and vice-versa when one
+            // pool runs dry).
+            let from_corner = if corners.is_empty() {
+                false
+            } else if edges.is_empty() {
+                true
+            } else {
+                rng.gen_range(0..100) < CORNER_BIAS
+            };
+            let pool = if from_corner {
+                &mut corners
+            } else {
+                &mut edges
+            };
+            if pool.is_empty() {
+                break;
+            }
+            let (x, z) = pool.swap_remove(rng.gen_range(0..pool.len()));
+            let idx = (x + z * GRID) as usize;
+            taken[idx] = true;
+
+            // Backstop: don't let this prop seal off any room/chest/stairs.
+            // Tentatively wall the cell and re-check reachability; restore the
+            // cell's original edges and skip if it disconnects something. (No
+            // RNG drawn for a rejected prop, so the stream stays deterministic
+            // across server/client.)
+            let saved = cells[idx];
+            cells[idx] |= super::EDGE_ALL;
+            floor_reachable(layout, &cells, &mut visited, &mut queue);
+            if !floor_targets_reachable(layout, &visited) {
+                cells[idx] = saved;
+                continue;
+            }
+
+            let kind = pick_prop_kind(rng);
+            let stack = if kind != PropKind::Chest && rng.gen_range(0..100) < PROP_STACK_PCT {
+                2
+            } else {
+                1
+            };
+            let rotation = rng.gen_range(0..360) as u16;
+            props.push(PropSpec {
+                x,
+                z,
+                kind,
+                stack,
+                rotation,
+            });
+        }
+    }
+
+    props
 }
 
 /// Guaranteed-valid degenerate layout: one large room wrapping the up
@@ -516,7 +727,9 @@ fn fallback_floor(
         down_shaft,
         chest,
         spawns: Vec::new(),
+        props: Vec::new(),
     };
     layout.spawns = roll_spawns(rng, &layout);
+    layout.props = roll_props(rng, &layout);
     layout
 }

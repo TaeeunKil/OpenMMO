@@ -10,12 +10,19 @@
   import * as THREE from 'three'
   import { onDestroy } from 'svelte'
   import { get } from 'svelte/store'
+  import { SvelteMap } from 'svelte/reactivity'
   import {
     currentDungeonDepth,
     currentDungeonId,
     dungeonDoorOpen,
   } from '../../stores/dungeonStore'
-  import { dungeonManager } from '../../managers/dungeonManager'
+  import {
+    dungeonManager,
+    type DungeonFloorLayout,
+  } from '../../managers/dungeonManager'
+  import { objectManager } from '../../managers/objectManager'
+  import { loadGLB } from '../../utils/gltfCache'
+  import { rotatedRectAabb } from '../../utils/objectFootprint'
   import type { DoorLeaf } from '../../utils/dungeon-geometry'
   import { networkManager } from '../../network/socket'
   import {
@@ -37,6 +44,24 @@
   const root = new THREE.Group()
   let currentGroup: THREE.Group | null = null
   let entranceGroup: THREE.Group | null = null
+  /** Decorative room clutter (barrel/crate/chest GLBs) for the current floor,
+   *  kept in its own group on `root` — never inside currentGroup, whose
+   *  disposer would otherwise dispose these shared cached GLB resources. */
+  let propsGroup: THREE.Group | null = null
+  /** Per-kind metrics measured once per GLB: base-seat offset (−bbox.min.y),
+   *  height, and horizontal half-extents (hx/hz) — used to seat the model, to
+   *  align a chest's long side to its wall, and to inset a boxy prop off it. */
+  const propMetrics = new SvelteMap<
+    string,
+    { seatY: number; height: number; hx: number; hz: number }
+  >()
+  /** Nest a stacked prop slightly into the one below to hide the seam. */
+  const PROP_STACK_NEST = 0.97
+  /** A crate is left crooked when its random yaw lands more than this many
+   *  degrees off a right angle (≈ a quarter of crates). */
+  const CRATE_ASKEW_THRESH = 34
+  /** Scales that off-axis amount down to a believable lean (~19–25°). */
+  const CRATE_ASKEW_SCALE = 0.55
   /** Double entrance doors; swing open/shut when clicked (house-door style). */
   let entranceDoors: DoorLeaf[] = []
   /** Eased open fraction (0 shut → 1 fully open), lerped per frame toward the
@@ -82,10 +107,146 @@
       disposeDungeonGroup(currentGroup)
       currentGroup = null
     }
+    clearProps()
     upShaftMeshes = []
     upShaftAABB = null
     upShaftOccluded = false
     wallRuns = []
+  }
+
+  /** Detach the current floor's props. Their GLB geometry/materials are shared
+   *  via the module-level gltfCache, so (unlike disposeDungeonGroup) we only
+   *  drop the clones and let GC reclaim them — disposing would corrupt the
+   *  cache and every other instance. */
+  function clearProps() {
+    if (propsGroup) {
+      root.remove(propsGroup)
+      propsGroup = null
+    }
+  }
+
+  /**
+   * Async-load and place the floor's decorative props. The dungeon-extras GLBs
+   * are authored at world scale, XZ-centered with their base at Y=0, so they
+   * only need seating + the cell-center offset. Committed only if the floor is
+   * still current — depth/dungeon can change across the awaits; `key` is the
+   * builtKey snapshot taken when the build started.
+   */
+  async function buildProps(
+    layout: DungeonFloorLayout,
+    key: string,
+    depth: number
+  ) {
+    const specs = layout.props ?? []
+    if (specs.length === 0) return
+    await objectManager.fetchCatalog()
+    if (key !== builtKey) return
+
+    const group = new THREE.Group()
+    group.position.set(
+      dungeonManager.originX,
+      dungeonManager.floorY(depth),
+      dungeonManager.originZ
+    )
+
+    const grid = dungeonManager.consts.grid
+    const carvedAt = (x: number, z: number) =>
+      x >= 0 && x < grid && z >= 0 && z < grid && layout.carved[x + z * grid]
+
+    for (const prop of specs) {
+      const def = objectManager.getCatalogEntry(prop.kind)
+      if (!def) continue
+      let template: THREE.Object3D
+      try {
+        template = (await loadGLB(`/models/objects/${def.model}`)).scene
+      } catch {
+        continue
+      }
+      if (key !== builtKey) return // floor changed mid-load — abandon
+
+      let m = propMetrics.get(prop.kind)
+      if (!m) {
+        template.updateMatrixWorld(true)
+        const box = new THREE.Box3().setFromObject(template)
+        const size = box.getSize(new THREE.Vector3())
+        m = {
+          seatY: -box.min.y,
+          height: Math.max(0.1, size.y),
+          hx: size.x / 2,
+          hz: size.z / 2,
+        }
+        propMetrics.set(prop.kind, m)
+      }
+
+      // Chests lie flat against a wall, long side parallel to it. Read the
+      // bordering wall from the carved grid (X-running wall preferred in a
+      // corner) and snap the model's long axis onto it.
+      let chestYawDeg = 0
+      if (prop.kind === 'chest') {
+        const wallAlongX = !carvedAt(prop.x, prop.z - 1) || !carvedAt(prop.x, prop.z + 1)
+        const wallAlongZ = !carvedAt(prop.x - 1, prop.z) || !carvedAt(prop.x + 1, prop.z)
+        const targetAxisX = wallAlongX || !wallAlongZ
+        const longAxisX = m.hx >= m.hz
+        chestYawDeg = longAxisX === targetAxisX ? 0 : 90
+      }
+
+      const count = Math.max(1, prop.stack)
+      for (let i = 0; i < count; i++) {
+        const clone = template.clone()
+
+        // Yaw per kind:
+        //  • chest — wall-aligned (computed above).
+        //  • crate — square box: snap to 90° so it sits flush, but leave the
+        //    occasional one crooked; quarter-turn each stacked tier.
+        //  • barrel — cylindrical, footprint is rotation-invariant: free yaw +
+        //    small per-tier twist.
+        let yawDeg: number
+        if (prop.kind === 'chest') {
+          yawDeg = chestYawDeg
+        } else if (prop.kind === 'crate') {
+          const quarter = Math.round(prop.rotation / 90)
+          const dev = prop.rotation - quarter * 90 // −45..45, uniform
+          const tiltDeg =
+            Math.abs(dev) > CRATE_ASKEW_THRESH ? dev * CRATE_ASKEW_SCALE : 0
+          yawDeg = quarter * 90 + tiltDeg + i * 90
+        } else {
+          yawDeg = prop.rotation + i * 23
+        }
+
+        // Keep boxy props inside their cell: push a chest/crate off any
+        // bordering wall by however far its rotated footprint overhangs the cell
+        // edge — a long chest tucked in a corner, or a tilted crate. Flush
+        // (axis-aligned, ≤1m) props get zero inset; barrels are round and small,
+        // so they stay centered.
+        let px = prop.x + 0.5
+        let pz = prop.z + 0.5
+        if (prop.kind !== 'barrel') {
+          const aabb = rotatedRectAabb(-m.hx, m.hx, -m.hz, m.hz, (yawDeg * Math.PI) / 180)
+          const insetX = Math.max(0, aabb.maxX - 0.5)
+          const insetZ = Math.max(0, aabb.maxZ - 0.5)
+          if (!carvedAt(prop.x - 1, prop.z)) px += insetX
+          else if (!carvedAt(prop.x + 1, prop.z)) px -= insetX
+          if (!carvedAt(prop.x, prop.z - 1)) pz += insetZ
+          else if (!carvedAt(prop.x, prop.z + 1)) pz -= insetZ
+        }
+
+        clone.position.set(px, m.seatY + i * m.height * PROP_STACK_NEST, pz)
+        clone.rotation.y = (yawDeg * Math.PI) / 180
+        clone.traverse((o) => {
+          if (o instanceof THREE.Mesh) {
+            o.castShadow = true
+            o.receiveShadow = true
+            o.raycast = () => {} // decorative: never intercept click-to-move
+          }
+        })
+        group.add(clone)
+      }
+    }
+
+    if (key !== builtKey) return
+    clearProps()
+    propsGroup = group
+    root.add(group)
   }
 
   /** Cache the up-shaft sub-group's meshes + world AABB for the fade pass.
@@ -273,6 +434,7 @@
     root.add(currentGroup)
     cacheUpShaft(currentGroup, built.upShaftAABB)
     cacheWallRuns(currentGroup, built.wallRuns)
+    void buildProps(layout, key, depth)
   })
 
   onDestroy(() => {

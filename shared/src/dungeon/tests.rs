@@ -70,7 +70,11 @@ fn golden_layout_hash() {
 // depth, but weighted-selection order now follows csv row order, so the picks
 // (and thus the hash) shift. Re-blessed again when floor 1 spawn count dropped
 // to 3..=5 (from the uniform 5..=9): the smaller draw shifts depth-1 RNG order.
-const GOLDEN_OLD_CRYPT_HASH: u64 = 0xa091_5202_fbc3_b743;
+// Re-blessed again when decorative room clutter (`props`) was added: roll_props
+// draws RNG after roll_spawns on every floor (spawns themselves are unchanged),
+// and the new field widens the Debug-hashed layout. Re-blessed again when the
+// per-room prop count range was raised from 2..=4 to 5..=10.
+const GOLDEN_OLD_CRYPT_HASH: u64 = 0xece4_b368_f4fb_c0b9;
 
 #[test]
 fn structure_invariants_many_seeds() {
@@ -388,6 +392,148 @@ fn walkable_drop_never_lands_in_a_wall() {
         }
     }
     assert!(checked > 0, "test never exercised a wall-bordering cell");
+}
+
+/// Decorative props honour every placement rule across many seeds: on carved
+/// room floor, never in a shaft / on the chest / on a spawn, always against a
+/// wall, never standing in a corridor mouth or a stair landing, one per cell,
+/// and with sane stack/rotation values.
+#[test]
+fn props_are_well_placed() {
+    let in_room = |layout: &FloorLayout, x: i32, z: i32| {
+        layout
+            .rooms
+            .iter()
+            .any(|r| x >= r.x && x < r.x + r.w && z >= r.z && z < r.z + r.d)
+    };
+    let in_shaft = |layout: &FloorLayout, x: i32, z: i32| {
+        layout.up_shaft.contains(x, z)
+            || layout.down_shaft.as_ref().is_some_and(|s| s.contains(x, z))
+    };
+
+    let mut total = 0u32;
+    for seed in 0..200u64 {
+        let floors = generate_dungeon(seed);
+        for layout in &floors {
+            // Landing cells whose approach must stay clear.
+            let mut landings: Vec<(i32, i32)> = Vec::new();
+            for w in 0..SHAFT_W {
+                landings.push(layout.up_shaft.step_cell(SHAFT_LEN - 1, w));
+            }
+            if let Some(ref d) = layout.down_shaft {
+                for w in 0..SHAFT_W {
+                    landings.push(d.step_cell(0, w));
+                }
+            }
+
+            for (i, p) in layout.props.iter().enumerate() {
+                total += 1;
+                assert!(
+                    layout.is_carved(p.x, p.z),
+                    "seed {seed}: prop off-grid at ({},{})",
+                    p.x,
+                    p.z
+                );
+                assert!(!in_shaft(layout, p.x, p.z), "seed {seed}: prop in shaft");
+                assert!(
+                    in_room(layout, p.x, p.z),
+                    "seed {seed}: prop outside any room"
+                );
+                assert_ne!(layout.chest, Some((p.x, p.z)), "seed {seed}: prop on chest");
+                assert!(
+                    !layout.spawns.iter().any(|s| s.x == p.x && s.z == p.z),
+                    "seed {seed}: prop on a monster spawn"
+                );
+
+                // Against ≥1 wall, and not blocking a corridor mouth or landing.
+                let walls = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .filter(|&&(dx, dz)| !layout.is_carved(p.x + dx, p.z + dz))
+                    .count();
+                assert!(
+                    walls >= 1,
+                    "seed {seed}: prop ({},{}) floating mid-room",
+                    p.x,
+                    p.z
+                );
+                for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, nz) = (p.x + dx, p.z + dz);
+                    let corridor = layout.is_carved(nx, nz)
+                        && !in_room(layout, nx, nz)
+                        && !in_shaft(layout, nx, nz);
+                    assert!(!corridor, "seed {seed}: prop blocks a corridor mouth");
+                    assert!(
+                        !landings.contains(&(nx, nz)),
+                        "seed {seed}: prop blocks a stair landing"
+                    );
+                }
+
+                assert!(
+                    p.stack == 1 || p.stack == 2,
+                    "seed {seed}: bad stack {}",
+                    p.stack
+                );
+                if matches!(p.kind, PropKind::Chest) {
+                    assert_eq!(p.stack, 1, "seed {seed}: chest must not stack");
+                }
+                assert!(p.rotation < 360, "seed {seed}: rotation out of range");
+
+                // One prop per cell.
+                for q in &layout.props[i + 1..] {
+                    assert!(
+                        !(q.x == p.x && q.z == p.z),
+                        "seed {seed}: two props share cell ({},{})",
+                        p.x,
+                        p.z
+                    );
+                }
+            }
+        }
+    }
+    assert!(total > 0, "no props were ever placed");
+}
+
+/// With props sealed into the passability grid, every room center stays
+/// reachable from the arrival (up-shaft exit) landing via the real A*. Props
+/// are rolled *after* the generation-time connectivity gate, so this is the
+/// check that solidifying them never walls a room off. (Chest and down-shaft
+/// entry reachability is covered by `full_descent_path_through_passability`,
+/// which likewise pathes through the props-sealed grid.)
+#[test]
+fn props_keep_rooms_reachable() {
+    let entrance = test_entrance();
+    let mut total_props = 0u32;
+    for seed in 0..60u64 {
+        let floors = generate_dungeon(seed);
+        let rp = dungeon_passability(&entrance, &floors);
+        let mut cache = PassabilityCache::new();
+        cache.insert(dungeon_cache_key("t"), rp);
+        for f in &floors {
+            total_props += f.props.len() as u32;
+            let floor = passability_floor_for_depth(f.depth);
+            let from = cell_center(&entrance, f.depth, f.up_shaft.exit_cell());
+            for room in &f.rooms {
+                let goal = cell_center(&entrance, f.depth, room.center());
+                let res = find_and_smooth_path(
+                    from.x,
+                    from.z,
+                    floor,
+                    goal.x,
+                    goal.z,
+                    floor,
+                    &cache,
+                    DUNGEON_PATH_MAX_NODES,
+                );
+                assert!(
+                    res.found,
+                    "seed {seed} depth {}: room center {:?} unreachable with props sealed",
+                    f.depth,
+                    room.center()
+                );
+            }
+        }
+    }
+    assert!(total_props > 0, "test never exercised a sealed prop");
 }
 
 #[test]
