@@ -56,15 +56,26 @@
   let chestRequested = false
 
   /** Once the player walking up to a clicked prop is within this range, the
-   *  break is requested. Kept inside the server's 2.5m so a borderline float
-   *  position never gets rejected. */
-  const PROP_BREAK_TRIGGER_RANGE = 2.0
+   *  break/open is requested. Kept inside the server's 2.5m so a borderline
+   *  float position never gets rejected. */
+  const PROP_INTERACT_TRIGGER_RANGE = 2.0
   /** Catalog id of the broken variant rendered when a prop is destroyed. */
   const BROKEN_VARIANT: Record<string, string> = {
     barrel: 'barrel_broken',
     crate: 'crate_pieces',
   }
   const isBreakable = (kind: string) => kind in BROKEN_VARIANT
+  /** Dungeon chest props render from this catalog id (the animated GLB, not the
+   *  static `chest.glb`) so a click can play the lid-open clip. */
+  const CHEST_ANIMATED_ID = 'chest_animated'
+  const CHEST_OPEN_CLIP = 'ChestOpen'
+  /** How far the open lid's rear corner reaches behind the chest origin (along
+   *  local −Z): the lid swings up and ~105° back over the hinge. Measured from
+   *  chest_animated.glb. The chest is pushed this far (less the half-cell it
+   *  already sits in) off its back wall so the opening lid never clips it. */
+  const CHEST_LID_BACK_REACH = 0.8
+  /** Gap kept between the fully-open lid and the back wall. */
+  const CHEST_LID_WALL_GAP = 0.06
 
   /** One placed prop, tracked so a live break can swap just it (not rebuild the
    *  whole floor). `cellX/cellZ` locate the broken debris at the cell center. */
@@ -75,8 +86,16 @@
     cellZ: number
     rotationDeg: number
     broken: boolean
+    /** Chest only: whether its lid-open animation has been started. */
+    opened?: boolean
   }
   let propEntries = new Map<number, PropEntry>()
+  /** The chest lid-open clip, captured once from the animated chest GLB and
+   *  shared by every chest clone (each gets its own AnimationMixer). */
+  let chestOpenClip: THREE.AnimationClip | null = null
+  /** Mixers for chests whose lid is opening/open; ticked each frame. Cleared
+   *  with the props on a floor rebuild. */
+  let chestMixers: THREE.AnimationMixer[] = []
 
   const root = new THREE.Group()
   let currentGroup: THREE.Group | null = null
@@ -161,6 +180,8 @@
   function clearProps() {
     for (const c of [...propsGroup.children]) propsGroup.remove(c)
     propEntries = new Map()
+    for (const m of chestMixers) m.stopAllAction()
+    chestMixers = []
   }
 
   /** Measure (and cache) a model's seat offset, height and half-extents. */
@@ -206,27 +227,49 @@
     depth: number,
     carvedAt: (x: number, z: number) => boolean
   ) {
-    const def = objectManager.getCatalogEntry(prop.kind)
+    // Chests render from the animated GLB (lid rigged for the open clip); the
+    // other props use their own catalog model.
+    const def =
+      prop.kind === 'chest'
+        ? objectManager.getCatalogEntry(CHEST_ANIMATED_ID)
+        : objectManager.getCatalogEntry(prop.kind)
     if (!def) return
     let template: THREE.Object3D
     try {
-      template = (await loadGLB(`/models/objects/${def.model}`)).scene
+      const gltf = await loadGLB(`/models/objects/${def.model}`)
+      template = gltf.scene
+      if (prop.kind === 'chest' && !chestOpenClip && gltf.animations.length) {
+        chestOpenClip =
+          gltf.animations.find((a) => a.name === CHEST_OPEN_CLIP) ??
+          gltf.animations[0]
+      }
     } catch {
       return
     }
     if (key !== builtKey) return // floor changed mid-load — abandon
     const m = measureProp(prop.kind, template)
 
-    // Chests lie flat against a wall, long side parallel to it. Read the
-    // bordering wall from the carved grid (X-running wall preferred in a
-    // corner) and snap the model's long axis onto it.
+    // Chests sit with their hinge (model back, local −Z) against a wall and
+    // their opening (local +Z) facing into the room. The lid swings up and back
+    // over the hinge, so the chest is also pushed off that wall (below) to
+    // clear it. Pick the back wall from the carved grid, preferring a Z-facing
+    // wall so the long (X) side runs parallel to it.
     let chestYawDeg = 0
+    let chestBackWall: 'N' | 'S' | 'W' | 'E' | null = null
     if (prop.kind === 'chest') {
-      const wallAlongX = !carvedAt(prop.x, prop.z - 1) || !carvedAt(prop.x, prop.z + 1)
-      const wallAlongZ = !carvedAt(prop.x - 1, prop.z) || !carvedAt(prop.x + 1, prop.z)
-      const targetAxisX = wallAlongX || !wallAlongZ
-      const longAxisX = m.hx >= m.hz
-      chestYawDeg = longAxisX === targetAxisX ? 0 : 90
+      if (!carvedAt(prop.x, prop.z - 1)) chestBackWall = 'N' // wall on −Z
+      else if (!carvedAt(prop.x, prop.z + 1)) chestBackWall = 'S' // wall on +Z
+      else if (!carvedAt(prop.x - 1, prop.z)) chestBackWall = 'W' // wall on −X
+      else if (!carvedAt(prop.x + 1, prop.z)) chestBackWall = 'E' // wall on +X
+      // Map the model's back (local −Z) onto the chosen wall.
+      chestYawDeg =
+        chestBackWall === 'S'
+          ? 180
+          : chestBackWall === 'W'
+            ? 90
+            : chestBackWall === 'E'
+              ? 270
+              : 0
     }
 
     const breakable = isBreakable(prop.kind)
@@ -236,7 +279,7 @@
       const clone = template.clone()
 
       // Yaw per kind:
-      //  • chest — wall-aligned (computed above).
+      //  • chest — opening faces the room, hinge to the wall (computed above).
       //  • crate — square box: snap to 90° so it sits flush, but leave the
       //    occasional one crooked; quarter-turn each stacked tier.
       //  • barrel — cylindrical, footprint is rotation-invariant: free yaw +
@@ -254,39 +297,61 @@
         yawDeg = prop.rotation + i * 23
       }
 
-      // Keep boxy props inside their cell: push a chest/crate off any
-      // bordering wall by however far its rotated footprint overhangs the cell
-      // edge — a long chest tucked in a corner, or a tilted crate. Flush
-      // (axis-aligned, ≤1m) props get zero inset; barrels are round and small,
-      // so they stay centered.
+      // Place within the cell. Chests get pushed off their back wall far enough
+      // that the open lid clears it, with the long ends tucked off any
+      // perpendicular (corner) wall. Crates push off any wall by their rotated
+      // footprint overhang so they stay inside the cell; barrels are round and
+      // small, so they stay centered.
       let px = prop.x + 0.5
       let pz = prop.z + 0.5
+      // Barrels are round and small, so they stay centered; chests and crates
+      // need their rotated footprint kept inside the cell.
       if (prop.kind !== 'barrel') {
         const aabb = rotatedRectAabb(-m.hx, m.hx, -m.hz, m.hz, (yawDeg * Math.PI) / 180)
         const insetX = Math.max(0, aabb.maxX - 0.5)
         const insetZ = Math.max(0, aabb.maxZ - 0.5)
-        if (!carvedAt(prop.x - 1, prop.z)) px += insetX
-        else if (!carvedAt(prop.x + 1, prop.z)) px -= insetX
-        if (!carvedAt(prop.x, prop.z - 1)) pz += insetZ
-        else if (!carvedAt(prop.x, prop.z + 1)) pz -= insetZ
+        if (prop.kind === 'chest') {
+          // Push off the back wall so the open lid clears it; tuck the long ends
+          // off any perpendicular (corner) wall on the other axis.
+          const backPush = Math.max(0, CHEST_LID_BACK_REACH + CHEST_LID_WALL_GAP - 0.5)
+          if (chestBackWall === 'N' || chestBackWall === 'S') {
+            pz += chestBackWall === 'N' ? backPush : -backPush
+            if (!carvedAt(prop.x - 1, prop.z)) px += insetX
+            else if (!carvedAt(prop.x + 1, prop.z)) px -= insetX
+          } else if (chestBackWall === 'W' || chestBackWall === 'E') {
+            px += chestBackWall === 'W' ? backPush : -backPush
+            if (!carvedAt(prop.x, prop.z - 1)) pz += insetZ
+            else if (!carvedAt(prop.x, prop.z + 1)) pz -= insetZ
+          }
+        } else {
+          // Crate: push off any bordering wall by the footprint overhang.
+          if (!carvedAt(prop.x - 1, prop.z)) px += insetX
+          else if (!carvedAt(prop.x + 1, prop.z)) px -= insetX
+          if (!carvedAt(prop.x, prop.z - 1)) pz += insetZ
+          else if (!carvedAt(prop.x, prop.z + 1)) pz -= insetZ
+        }
       }
 
       clone.position.set(px, m.seatY + i * m.height * PROP_STACK_NEST, pz)
       clone.rotation.y = (yawDeg * Math.PI) / 180
-      if (breakable) {
-        // Clicked → walk up → break. Read by inputHandler's prop raycast pass.
+      // Interactive props (clicked → walk up → break/open). Read by
+      // inputHandler's prop raycast pass. Barrels/crates break; chests open.
+      const openable = prop.kind === 'chest'
+      const interactive = breakable || openable
+      if (interactive) {
         clone.userData.dungeonProp = true
-        clone.userData.propBreakable = true
         clone.userData.propId = index
         clone.userData.propKind = prop.kind
         clone.userData.propDepth = depth
         clone.userData.propEntranceId = dungeonManager.dungeonId
+        if (breakable) clone.userData.propBreakable = true
+        if (openable) clone.userData.propOpenable = true
       }
       clone.traverse((o) => {
         if (o instanceof THREE.Mesh) {
           o.castShadow = true
           o.receiveShadow = true
-          if (!breakable) o.raycast = () => {} // chests: decorative only
+          if (!interactive) o.raycast = () => {} // decorative: never intercept
         }
       })
       group.add(clone)
@@ -299,6 +364,7 @@
       cellZ: prop.z,
       rotationDeg: prop.rotation,
       broken: false,
+      opened: false,
     })
   }
 
@@ -399,8 +465,10 @@
     propsGroup.position.copy(group.position)
     while (group.children.length) propsGroup.add(group.children[0])
     propEntries = entries
-    // Catch any breaks that landed while the GLBs were loading.
+    // Catch any breaks/opens that landed while the GLBs were loading. Chests
+    // already open at build time snap to the open pose (no entrance swing).
     reconcileBrokenProps(depth, key)
+    reconcileOpenedProps(depth, key, true)
   }
 
   /** Swap every prop the server says is broken but that's still rendered whole. */
@@ -429,6 +497,37 @@
     for (const c of entry.clones) propsGroup.remove(c)
     propsGroup.add(clone)
     entry.clones = [clone]
+  }
+
+  /** Play the lid-open animation on every chest the server says is open but
+   *  that's still rendered shut. `instant` jumps straight to the open pose (for
+   *  chests already open when the floor builds); otherwise the lid animates. */
+  function reconcileOpenedProps(depth: number, key: string, instant: boolean) {
+    if (key !== builtKey) return
+    const opened = dungeonManager.openedPropsForDepth(depth)
+    for (const index of opened) {
+      const entry = propEntries.get(index)
+      if (entry && entry.kind === 'chest' && !entry.opened) {
+        openChest(entry, instant)
+      }
+    }
+  }
+
+  /** Start (or snap to the end of) a chest's lid-open animation. Each chest gets
+   *  its own mixer bound to its clone; the shared clip animates the `chest_lid`
+   *  node, so cloning by name resolves correctly. */
+  function openChest(entry: PropEntry, instant: boolean) {
+    if (entry.opened) return
+    const clone = entry.clones[0]
+    if (!clone || !chestOpenClip) return
+    entry.opened = true
+    const mixer = new THREE.AnimationMixer(clone)
+    const action = mixer.clipAction(chestOpenClip)
+    action.loop = THREE.LoopOnce
+    action.clampWhenFinished = true // hold the lid open after the clip ends
+    action.play()
+    if (instant) mixer.setTime(chestOpenClip.duration) // already-open: skip the swing
+    chestMixers.push(mixer)
   }
 
   /** Cache the up-shaft sub-group's meshes + world AABB for the fade pass.
@@ -624,6 +723,7 @@
   $effect(() => {
     void $dungeonPropsRevision
     reconcileBrokenProps($currentDungeonDepth, builtKey)
+    reconcileOpenedProps($currentDungeonDepth, builtKey, false)
   })
 
   onDestroy(() => {
@@ -633,9 +733,38 @@
     debugLineMaterial.dispose()
   })
 
-  /** Per-frame: stair-shaft floor transitions + chest proximity. */
-  export function update(playerX: number, playerY: number, playerZ: number) {
+  /** True once the player is close enough to a pending prop on the current
+   *  floor to fire its break/open. */
+  function pendingPropReached(
+    pending: { depth: number; x: number; z: number },
+    depth: number,
+    playerX: number,
+    playerZ: number
+  ): boolean {
+    if (depth !== pending.depth) return false
+    const dx = playerX - pending.x
+    const dz = playerZ - pending.z
+    return (
+      dx * dx + dz * dz <=
+      PROP_INTERACT_TRIGGER_RANGE * PROP_INTERACT_TRIGGER_RANGE
+    )
+  }
+
+  /** Per-frame: stair-shaft floor transitions + chest proximity. `deltaMs`
+   *  advances chest lid-open animations. */
+  export function update(
+    playerX: number,
+    playerY: number,
+    playerZ: number,
+    deltaMs = 0
+  ) {
     dungeonManager.updateFromPlayerPosition(playerX, playerZ)
+
+    // Advance any opening/open chest lids (clamped at the end once finished).
+    if (chestMixers.length > 0) {
+      const dt = deltaMs / 1000
+      for (const m of chestMixers) m.update(dt)
+    }
 
     // (The entrance roof has no proximity hide — it's always shown at depth 0.)
 
@@ -688,20 +817,24 @@
     // request the break once within range. The server validates and broadcasts;
     // the visual swap happens on receipt (handles other players' breaks too).
     const pending = dungeonManager.pendingBreak
-    if (pending && depth === pending.depth) {
-      const pdx = playerX - pending.x
-      const pdz = playerZ - pending.z
-      if (
-        pdx * pdx + pdz * pdz <=
-        PROP_BREAK_TRIGGER_RANGE * PROP_BREAK_TRIGGER_RANGE
-      ) {
-        // Reached the prop — hand off to the player swing, which breaks it at the
-        // contact frame. Clear pending first so this fires once.
-        const id = dungeonManager.dungeonId!
-        const { depth: d, propId, x, z } = pending
-        dungeonManager.clearPendingBreak()
-        onPropReady?.(id, d, propId, x, z)
-      }
+    if (pending && pendingPropReached(pending, depth, playerX, playerZ)) {
+      // Reached the prop — hand off to the player swing, which breaks it at the
+      // contact frame. Clear pending first so this fires once.
+      const id = dungeonManager.dungeonId!
+      const { depth: d, propId, x, z } = pending
+      dungeonManager.clearPendingBreak()
+      onPropReady?.(id, d, propId, x, z)
+    }
+
+    // Pending chest open: the player walked up to a chest they clicked — request
+    // the open once within range. The server validates and broadcasts; the lid
+    // animation plays on receipt (handles other players' opens too).
+    const pendingOpen = dungeonManager.pendingOpen
+    if (pendingOpen && pendingPropReached(pendingOpen, depth, playerX, playerZ)) {
+      const id = dungeonManager.dungeonId!
+      const { depth: d, propId } = pendingOpen
+      dungeonManager.clearPendingOpen()
+      networkManager.sendOpenDungeonProp(id, d, propId)
     }
 
     const layout = depth >= 1 ? dungeonManager.layoutAt(depth) : null

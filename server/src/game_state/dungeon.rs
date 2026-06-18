@@ -31,8 +31,9 @@ const SPAWN_RETRY_MS: u64 = 10 * 1000;
 const CHEST_COOLDOWN_MS: u64 = 60 * 60 * 1000;
 const CHEST_INTERACT_RANGE: f32 = 2.5;
 const CHEST_ITEM_MIN_PRICE: i64 = 2000;
-/// How close a player must stand to a barrel/crate to break it.
-const PROP_BREAK_RANGE: f32 = 2.5;
+/// How close a player must stand to a prop to break (barrel/crate) or open
+/// (chest) it.
+const PROP_INTERACT_RANGE: f32 = 2.5;
 
 pub(super) struct DungeonRuntime {
     pub layouts: Vec<FloorLayout>,
@@ -47,6 +48,10 @@ pub(super) struct DungeonRuntime {
     /// the floor's `FloorRuntime` hasn't been created (e.g. a relog rehydrate
     /// that didn't replay the floor-entry transition).
     pub broken_props: HashMap<u8, HashSet<u32>>,
+    /// Opened chest props per depth (indices into that floor's `props`). Same
+    /// lifetime/scope as `broken_props`; chests stay solid when opened (only the
+    /// lid animates), so this drives no passability change.
+    pub opened_props: HashMap<u8, HashSet<u32>>,
 }
 
 pub(super) struct FloorRuntime {
@@ -91,6 +96,7 @@ impl GameState {
                 floors: HashMap::new(),
                 chest_opened_at: HashMap::new(),
                 broken_props: HashMap::new(),
+                opened_props: HashMap::new(),
             });
     }
 
@@ -272,7 +278,7 @@ impl GameState {
                 let prop_pos = cell_center(&entrance.position(), depth, (prop.x, prop.z));
                 let dx = player_pos.x - prop_pos.x;
                 let dz = player_pos.z - prop_pos.z;
-                if dx * dx + dz * dz > PROP_BREAK_RANGE * PROP_BREAK_RANGE {
+                if dx * dx + dz * dz > PROP_INTERACT_RANGE * PROP_INTERACT_RANGE {
                     Some(Err("Too far from the prop"))
                 } else if rt.broken_props.entry(depth).or_default().insert(prop_id) {
                     Some(Ok(()))
@@ -298,6 +304,98 @@ impl GameState {
                     player_floor,
                     super::AGENT_EVENT_DELIVERY_RADIUS,
                     ServerMessage::DungeonPropBroken {
+                        entrance_id: entrance_id.to_string(),
+                        depth,
+                        prop_id,
+                    },
+                    None,
+                )
+                .await;
+            }
+            None => {}
+        }
+    }
+
+    /// Open an interactive chest prop: requires standing next to it on its
+    /// floor. Records the open for the instance and broadcasts it to nearby
+    /// players (the opener included) so every client plays the lid animation.
+    /// The chest stays solid — opening changes no passability. No-op if it's
+    /// already open.
+    pub async fn open_dungeon_prop(
+        &self,
+        player_id: &PlayerId,
+        entrance_id: &str,
+        depth: u8,
+        prop_id: u32,
+    ) {
+        if depth == 0 {
+            return;
+        }
+        let Some(entrance) = self.dungeon_defs.get(entrance_id).cloned() else {
+            return;
+        };
+        self.ensure_dungeon_runtime(entrance_id).await;
+
+        let (player_pos, player_floor) = {
+            let players = self.players.read().await;
+            match players.get(player_id) {
+                Some(p) if p.health > 0 => (p.position.clone(), p.floor_level),
+                _ => return,
+            }
+        };
+
+        // Validate against the layout + claim the open under the dungeon lock.
+        // `Some(Err)` → reject with a reason, `Some(Ok)` → newly opened,
+        // `None` → already open (silent no-op).
+        let outcome: Option<Result<(), &str>> = {
+            let mut dungeons = self.dungeons.write().await;
+            let Some(rt) = dungeons.get_mut(entrance_id) else {
+                return;
+            };
+            let prop = match rt
+                .layouts
+                .get((depth - 1) as usize)
+                .and_then(|l| l.props.get(prop_id as usize))
+            {
+                Some(p) => *p,
+                None => return,
+            };
+            // Only chests are openable (barrels/crates break instead).
+            if !matches!(prop.kind, PropKind::Chest) {
+                return;
+            }
+            if player_floor != -(depth as i8) {
+                Some(Err("You must be on the chest's floor"))
+            } else {
+                let prop_pos = cell_center(&entrance.position(), depth, (prop.x, prop.z));
+                let dx = player_pos.x - prop_pos.x;
+                let dz = player_pos.z - prop_pos.z;
+                if dx * dx + dz * dz > PROP_INTERACT_RANGE * PROP_INTERACT_RANGE {
+                    Some(Err("Too far from the chest"))
+                } else if rt.opened_props.entry(depth).or_default().insert(prop_id) {
+                    Some(Ok(()))
+                } else {
+                    None
+                }
+            }
+        };
+
+        match outcome {
+            Some(Err(reason)) => {
+                self.send_direct_message(
+                    player_id,
+                    ServerMessage::InteractionRejected {
+                        reason: reason.to_string(),
+                    },
+                )
+                .await;
+            }
+            Some(Ok(())) => {
+                self.send_direct_message_to_players_within_position(
+                    &player_pos,
+                    player_floor,
+                    super::AGENT_EVENT_DELIVERY_RADIUS,
+                    ServerMessage::DungeonPropOpened {
                         entrance_id: entrance_id.to_string(),
                         depth,
                         prop_id,
@@ -341,7 +439,7 @@ impl GameState {
 
     async fn enter_dungeon_floor(&self, player_id: &PlayerId, entrance_id: &str, depth: u8) {
         self.ensure_dungeon_runtime(entrance_id).await;
-        let broken: Vec<u32> = {
+        let (broken, opened): (Vec<u32>, Vec<u32>) = {
             let mut dungeons = self.dungeons.write().await;
             let Some(rt) = dungeons.get_mut(entrance_id) else {
                 return;
@@ -366,20 +464,29 @@ impl GameState {
                 })
                 .players
                 .insert(player_id.clone());
-            rt.broken_props
+            let broken = rt
+                .broken_props
                 .get(&depth)
                 .map(|s| s.iter().copied().collect())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let opened = rt
+                .opened_props
+                .get(&depth)
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+            (broken, opened)
         };
-        // Tell the arriving player which props are already broken so they
-        // render the broken variant and walk through those cells from the
-        // start (sent even when empty so re-entries reset cleanly).
+        // Tell the arriving player which props are already broken (render the
+        // broken variant + walk through those cells) or opened (chests in the
+        // open pose) from the start (sent even when empty so re-entries reset
+        // cleanly).
         self.send_direct_message(
             player_id,
             ServerMessage::DungeonPropsState {
                 entrance_id: entrance_id.to_string(),
                 depth,
                 broken,
+                opened,
             },
         )
         .await;

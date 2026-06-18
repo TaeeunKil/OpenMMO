@@ -748,9 +748,10 @@
     clickPosition: Position,
     options: { pickupAfterArrival?: number | null } = {}
   ) {
-    // Any fresh movement cancels a pending prop break (breakProp re-arms it
-    // after its own walk-up call below).
+    // Any fresh movement cancels a pending prop break/open (breakProp/openProp
+    // re-arm it after their own walk-up call below).
     dungeonManager.clearPendingBreak()
+    dungeonManager.clearPendingOpen()
     const pickupAfterArrival = options.pickupAfterArrival ?? null
 
     runMoveRequest({
@@ -855,16 +856,19 @@
     })
   }
 
-  /** Click a barrel/crate: walk up to it (if needed), then arm the break.
-   *  The dungeon layer fires it via the server once the player is in range. */
-  function breakProp(intent: Extract<ClickIntent, { type: 'break_prop' }>) {
+  /** Shared walk-up for a clicked interactive prop: cancel combat, move to
+   *  within reach if needed (it's a solid pillar, so stop just short), then arm
+   *  `setPending` so the dungeon layer fires the break/open on arrival. */
+  function approachProp(
+    intent: { depth: number; propId: number; position: Position },
+    setPending: (p: { depth: number; propId: number; x: number; z: number }) => void
+  ) {
     if (!currentPlayer) return
     combatController.cancelCombat()
     const dx = currentPlayer.position.x - intent.position.x
     const dz = currentPlayer.position.z - intent.position.z
     const dist = Math.sqrt(dx * dx + dz * dz)
     if (dist > PROP_APPROACH_STOP) {
-      // Walk toward the prop, stopping just short of it (it's a solid pillar).
       const d = dist || 1
       handleClickToMove({
         x: intent.position.x + (dx / d) * PROP_APPROACH_STOP,
@@ -872,12 +876,27 @@
         z: intent.position.z + (dz / d) * PROP_APPROACH_STOP,
       })
     }
-    dungeonManager.setPendingBreak({
+    setPending({
       depth: intent.depth,
       propId: intent.propId,
       x: intent.position.x,
       z: intent.position.z,
     })
+  }
+
+  /** Click a barrel/crate: walk up, then arm the break. The dungeon layer fires
+   *  it via the server once the player is in range. */
+  function breakProp(intent: Extract<ClickIntent, { type: 'break_prop' }>) {
+    approachProp(intent, (p) => dungeonManager.setPendingBreak(p))
+  }
+
+  /** Click a chest: walk up, then arm the open. The dungeon layer sends the open
+   *  via the server once in range; every client (the opener included) plays the
+   *  lid animation on the broadcast. */
+  function openProp(intent: Extract<ClickIntent, { type: 'open_prop' }>) {
+    // Already open — nothing to do (avoid a pointless walk-up).
+    if (dungeonManager.isPropOpened(intent.depth, intent.propId)) return
+    approachProp(intent, (p) => dungeonManager.setPendingOpen(p))
   }
 
   /** The player has walked up to a clicked barrel/crate: swing the sword once
@@ -1020,6 +1039,7 @@
         }
       },
       breakProp,
+      openProp,
       moveToGround: (position) => {
         combatController.cancelCombat()
         handleClickToMove(position)

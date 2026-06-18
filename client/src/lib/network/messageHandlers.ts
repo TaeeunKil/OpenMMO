@@ -682,11 +682,20 @@ export function handleServerMessage(
     }
 
     case 'DungeonPropsState':
-      dungeonManager.setBrokenProps(data.entrance_id, data.depth, data.broken)
+      dungeonManager.setPropsState(
+        data.entrance_id,
+        data.depth,
+        data.broken,
+        data.opened
+      )
       break
 
     case 'DungeonPropBroken':
       dungeonManager.markPropBroken(data.entrance_id, data.depth, data.prop_id)
+      break
+
+    case 'DungeonPropOpened':
+      dungeonManager.markPropOpened(data.entrance_id, data.depth, data.prop_id)
       break
 
     case 'HouseSpawned':

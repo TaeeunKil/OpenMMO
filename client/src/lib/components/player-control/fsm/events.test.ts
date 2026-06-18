@@ -82,6 +82,7 @@ function makeActions() {
     approachAndPickup: vi.fn(),
     interactNpc: vi.fn(),
     breakProp: vi.fn(),
+    openProp: vi.fn(),
     moveToGround: vi.fn(),
     requestMove: vi.fn(),
     onInteractionFinished: vi.fn(),

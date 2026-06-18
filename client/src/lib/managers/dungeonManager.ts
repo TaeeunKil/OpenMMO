@@ -60,7 +60,8 @@ export interface DungeonProp {
   rotation: number
 }
 
-/** A pending click-to-break: which prop, and the world XZ to close in on. */
+/** A pending click-to-interact (break a barrel/crate, or open a chest): which
+ *  prop, and the world XZ to close in on. */
 export interface PendingPropBreak {
   depth: number
   propId: number
@@ -259,10 +260,18 @@ class DungeonManager {
   /** Broken props per depth (indices into that floor's `props`). Server-driven;
    *  cleared on enter/exit since it's scoped to the active dungeon instance. */
   private brokenProps = new Map<number, Set<number>>()
+  /** Opened chest props per depth (indices into that floor's `props`). Same
+   *  lifetime/scope as `brokenProps`; drives the lid-open animation, not
+   *  passability (chests stay solid when open). */
+  private openedProps = new Map<number, Set<number>>()
   /** A barrel/crate the player clicked and is walking toward; the dungeon layer
    *  fires the break once the player is within range (see GameSceneDungeonLayer
    *  update). Cleared on arrival, a new movement click, or leaving the dungeon. */
   private pendingBreakState: PendingPropBreak | null = null
+  /** A chest the player clicked and is walking toward; the dungeon layer sends
+   *  the open once the player is within range. Same lifecycle as
+   *  `pendingBreakState`. */
+  private pendingOpenState: PendingPropBreak | null = null
 
   get active(): boolean {
     return this.id !== null
@@ -347,6 +356,7 @@ class DungeonManager {
     this.layouts = dungeon_layout(id) as DungeonFloorLayout[]
     dungeon_add_passability(id, entrance.x, entrance.y, entrance.z)
     this.brokenProps.clear()
+    this.openedProps.clear()
     this.id = id
     this.entrance = entrance
     currentDungeonId.set(id)
@@ -360,7 +370,9 @@ class DungeonManager {
     this.entrance = null
     this.layouts = []
     this.brokenProps.clear()
+    this.openedProps.clear()
     this.pendingBreakState = null
+    this.pendingOpenState = null
     currentDungeonId.set(null)
     currentDungeonDepth.set(0)
     dungeonDoorOpen.set(false)
@@ -371,13 +383,30 @@ class DungeonManager {
     return this.brokenProps.get(depth) ?? EMPTY_BROKEN
   }
 
+  /** Prop indices (chests) opened on a floor (empty set when none/unknown). */
+  openedPropsForDepth(depth: number): ReadonlySet<number> {
+    return this.openedProps.get(depth) ?? EMPTY_BROKEN
+  }
+
+  /** Whether a specific prop is already known opened (skip a redundant walk-up). */
+  isPropOpened(depth: number, propId: number): boolean {
+    return this.openedProps.get(depth)?.has(propId) ?? false
+  }
+
   /**
-   * Replace the broken-prop set for a floor from the server's on-entry
-   * snapshot, refresh that floor's passability and signal the render layer.
+   * Replace the broken + opened prop sets for a floor from the server's
+   * on-entry snapshot, refresh that floor's passability (broken only) and
+   * signal the render layer.
    */
-  setBrokenProps(entranceId: string, depth: number, broken: number[]) {
+  setPropsState(
+    entranceId: string,
+    depth: number,
+    broken: number[],
+    opened: number[]
+  ) {
     if (entranceId !== this.id) return
     this.brokenProps.set(depth, new Set(broken))
+    this.openedProps.set(depth, new Set(opened))
     this.applyBrokenPassability(depth)
     dungeonPropsRevision.update((n) => n + 1)
   }
@@ -399,6 +428,23 @@ class DungeonManager {
     dungeonPropsRevision.update((n) => n + 1)
   }
 
+  /**
+   * Record a single newly-opened chest (live open broadcast). No-op if already
+   * known open. Drives only the render layer (no passability change — the
+   * chest stays solid when open).
+   */
+  markPropOpened(entranceId: string, depth: number, propId: number) {
+    if (entranceId !== this.id) return
+    let set = this.openedProps.get(depth)
+    if (!set) {
+      set = new Set()
+      this.openedProps.set(depth, set)
+    }
+    if (set.has(propId)) return
+    set.add(propId)
+    dungeonPropsRevision.update((n) => n + 1)
+  }
+
   /** Rebuild a floor's wasm passability with its current broken set applied. */
   private applyBrokenPassability(depth: number) {
     if (!this.id) return
@@ -417,6 +463,18 @@ class DungeonManager {
 
   clearPendingBreak() {
     this.pendingBreakState = null
+  }
+
+  get pendingOpen(): PendingPropBreak | null {
+    return this.pendingOpenState
+  }
+
+  setPendingOpen(pending: PendingPropBreak) {
+    this.pendingOpenState = pending
+  }
+
+  clearPendingOpen() {
+    this.pendingOpenState = null
   }
 
   setDepth(depth: number) {

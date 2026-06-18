@@ -531,7 +531,8 @@
         dungeonLayerRef?.update(
           currentPlayer.position.x,
           currentPlayer.position.y,
-          currentPlayer.position.z
+          currentPlayer.position.z,
+          deltaTime
         )
       }
 

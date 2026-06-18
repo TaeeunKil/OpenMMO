@@ -77,6 +77,13 @@ export type ClickIntent =
       propId: number
       position: Position
     }
+  | {
+      type: 'open_prop'
+      entranceId: string
+      depth: number
+      propId: number
+      position: Position
+    }
   | { type: 'move_to_ground'; position: Position }
   | { type: 'none' }
 
@@ -334,24 +341,27 @@ class InputHandler {
       }
     }
 
-    // Check intersection with breakable dungeon props. No distance gate: the
-    // player walks up to the prop and the break fires on arrival.
+    // Check intersection with interactive dungeon props (breakable barrels/
+    // crates, openable chests). No distance gate: the player walks up to the
+    // prop and the break/open fires on arrival.
     if (context.propMeshes.length > 0) {
       const propHits = raycaster.intersectObjects(context.propMeshes, true)
       if (propHits.length > 0) {
-        const owner = findAncestorWithUserData(
-          propHits[0].object,
-          'propBreakable'
-        )
+        const owner = findAncestorWithUserData(propHits[0].object, 'propId')
         if (owner) {
           const wp = new THREE.Vector3()
           owner.getWorldPosition(wp)
-          return {
-            type: 'break_prop',
+          const target = {
             entranceId: owner.userData.propEntranceId as string,
             depth: owner.userData.propDepth as number,
             propId: owner.userData.propId as number,
             position: { x: wp.x, y: wp.y, z: wp.z },
+          }
+          if (owner.userData.propOpenable) {
+            return { type: 'open_prop', ...target }
+          }
+          if (owner.userData.propBreakable) {
+            return { type: 'break_prop', ...target }
           }
         }
       }

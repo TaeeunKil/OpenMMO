@@ -111,6 +111,15 @@ pub enum ClientMessage {
         depth: u8,
         prop_id: u32,
     },
+    /// Open an interactive dungeon chest prop (plays its lid animation). The
+    /// server validates floor, proximity and prop kind, records the open for
+    /// the dungeon instance and broadcasts it nearby. The chest stays solid
+    /// (no passability change) — only the lid animates.
+    OpenDungeonProp {
+        entrance_id: String,
+        depth: u8,
+        prop_id: u32,
+    },
     DebugTeleport {
         position: Position,
     },
@@ -261,13 +270,21 @@ pub enum ServerMessage {
         depth: u8,
         prop_id: u32,
     },
-    /// Snapshot of which props on a floor are already broken, sent directly to
-    /// a player as they enter that dungeon floor so late arrivals render the
-    /// current state.
+    /// An interactive dungeon chest prop was opened: play its lid-open
+    /// animation. Broadcast to nearby players (the opener included).
+    DungeonPropOpened {
+        entrance_id: String,
+        depth: u8,
+        prop_id: u32,
+    },
+    /// Snapshot of which props on a floor are already broken or opened, sent
+    /// directly to a player as they enter that dungeon floor so late arrivals
+    /// render the current state (broken debris + chests in the open pose).
     DungeonPropsState {
         entrance_id: String,
         depth: u8,
         broken: Vec<u32>,
+        opened: Vec<u32>,
     },
     ChatMessage {
         player_id: String,

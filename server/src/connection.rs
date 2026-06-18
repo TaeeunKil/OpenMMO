@@ -667,6 +667,20 @@ async fn handle_client_message(
             }
         }
 
+        ClientMessage::OpenDungeonProp {
+            entrance_id,
+            depth,
+            prop_id,
+        } => {
+            if let Some(id) = &state.player_id {
+                game_state
+                    .open_dungeon_prop(id, &entrance_id, depth, prop_id)
+                    .await;
+            } else {
+                warn!("Received prop open from client that is not in game");
+            }
+        }
+
         ClientMessage::DebugTeleport { position } => {
             if let Some(id) = &state.player_id {
                 let rotation = game_state

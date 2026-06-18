@@ -143,6 +143,11 @@
     "model": "chest.glb"
   },
   {
+    "id": "chest_animated",
+    "name": "Chest (Animated)",
+    "model": "chest_animated.glb"
+  },
+  {
     "id": "chair",
     "name": "Chair",
     "model": "chair.glb"

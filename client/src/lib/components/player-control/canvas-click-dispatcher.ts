@@ -10,6 +10,7 @@ type InteractIntent = Extract<ClickIntent, { type: 'interact_object' }>
 type PickupIntent = Extract<ClickIntent, { type: 'pickup_ground_item' }>
 type NpcIntent = Extract<ClickIntent, { type: 'interact_npc' }>
 type BreakPropIntent = Extract<ClickIntent, { type: 'break_prop' }>
+type OpenPropIntent = Extract<ClickIntent, { type: 'open_prop' }>
 
 export interface CanvasClickActions {
   /** Player is at melee range — start the attack swing immediately. */
@@ -30,6 +31,8 @@ export interface CanvasClickActions {
   interactNpc(intent: NpcIntent): void
   /** Walk up to a clicked barrel/crate, breaking it on arrival. */
   breakProp(intent: BreakPropIntent): void
+  /** Walk up to a clicked chest, opening it (lid animation) on arrival. */
+  openProp(intent: OpenPropIntent): void
   moveToGround(position: Position): void
 }
 
@@ -74,6 +77,9 @@ export function dispatchCanvasClickIntent(
       return
     case 'break_prop':
       actions.breakProp(intent)
+      return
+    case 'open_prop':
+      actions.openProp(intent)
       return
     case 'move_to_ground':
       actions.moveToGround(intent.position)

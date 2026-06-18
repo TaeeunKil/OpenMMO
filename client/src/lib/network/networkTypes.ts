@@ -137,6 +137,9 @@ export type ClientMessage =
   | {
       BreakDungeonProp: { entrance_id: string; depth: number; prop_id: number }
     }
+  | {
+      OpenDungeonProp: { entrance_id: string; depth: number; prop_id: number }
+    }
   | { DebugTeleport: { position: Position } }
   | { DebugDropItem: { item_def_id: string } }
   | { DebugSetTime: { hour: number; minute: number } }
