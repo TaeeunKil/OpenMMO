@@ -6,7 +6,8 @@ export interface ItemDefinition {
   name: string
   description: string
   weight: number
-  equipSlot: EquipSlot | null
+  /** Absent for non-equippable items (the CSV→JSON step drops empty cells). */
+  equipSlot?: EquipSlot | null
   stackable: boolean
   icon: string
   worldModel?: string

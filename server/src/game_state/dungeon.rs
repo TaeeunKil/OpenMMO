@@ -11,6 +11,7 @@ use onlinerpg_shared::dungeon::{
     cell_center, dungeon_seed, floor_world_y, generate_dungeon, monster_level_for_depth,
     FloorLayout, PropKind,
 };
+use onlinerpg_shared::inventory::GroundItem;
 use onlinerpg_shared::{Position, ServerMessage};
 use tracing::{info, warn};
 
@@ -236,28 +237,31 @@ impl GameState {
         depth: u8,
         prop_id: u32,
     ) {
-        self.interact_with_dungeon_prop(
-            player_id,
-            entrance_id,
-            depth,
-            prop_id,
-            "prop",
-            |kind| matches!(kind, PropKind::Barrel | PropKind::Crate),
-            |rt| &mut rt.broken_props,
-            ServerMessage::DungeonPropBroken {
-                entrance_id: entrance_id.to_string(),
+        // Breaking has no loot to place, so the prop position is discarded.
+        let _ = self
+            .interact_with_dungeon_prop(
+                player_id,
+                entrance_id,
                 depth,
                 prop_id,
-            },
-        )
-        .await;
+                "prop",
+                |kind| matches!(kind, PropKind::Barrel | PropKind::Crate),
+                |rt| &mut rt.broken_props,
+                ServerMessage::DungeonPropBroken {
+                    entrance_id: entrance_id.to_string(),
+                    depth,
+                    prop_id,
+                },
+            )
+            .await;
     }
 
     /// Open an interactive chest prop: requires standing next to it on its
     /// floor. Records the open for the instance and broadcasts it to nearby
     /// players (the opener included) so every client plays the lid animation.
     /// The chest stays solid — opening changes no passability. No-op if it's
-    /// already open.
+    /// already open. A fresh open also spills a loose coin pile next to the
+    /// chest for anyone nearby to grab (1–10 copper on pickup).
     pub async fn open_dungeon_prop(
         &self,
         player_id: &PlayerId,
@@ -265,30 +269,103 @@ impl GameState {
         depth: u8,
         prop_id: u32,
     ) {
-        self.interact_with_dungeon_prop(
-            player_id,
-            entrance_id,
-            depth,
-            prop_id,
-            "chest",
-            |kind| matches!(kind, PropKind::Chest),
-            |rt| &mut rt.opened_props,
-            ServerMessage::DungeonPropOpened {
-                entrance_id: entrance_id.to_string(),
+        let opened_at = self
+            .interact_with_dungeon_prop(
+                player_id,
+                entrance_id,
                 depth,
                 prop_id,
+                "chest",
+                |kind| matches!(kind, PropKind::Chest),
+                |rt| &mut rt.opened_props,
+                ServerMessage::DungeonPropOpened {
+                    entrance_id: entrance_id.to_string(),
+                    depth,
+                    prop_id,
+                },
+            )
+            .await;
+
+        if let Some(chest_pos) = opened_at {
+            let drop_pos = self
+                .chest_coin_drop_position(entrance_id, depth, prop_id, chest_pos)
+                .await;
+            let instance_id = self.next_instance_id().await;
+            self.spawn_ground_item(
+                GroundItem {
+                    instance_id,
+                    item_def_id: super::COIN_PILE_ITEM_ID.to_string(),
+                    position: drop_pos,
+                    floor_level: -(depth as i8),
+                },
+                None,
+            )
+            .await;
+        }
+    }
+
+    /// Where an opened chest prop drops its coin pile: a short step out from the
+    /// chest cell toward its opening — the carved side opposite its back wall,
+    /// the same facing the client seats the chest and swings its lid — so the
+    /// coins land in front of the chest instead of under it. Falls back to the
+    /// chest cell center when the facing can't be read or the opening cell isn't
+    /// floor.
+    async fn chest_coin_drop_position(
+        &self,
+        entrance_id: &str,
+        depth: u8,
+        prop_id: u32,
+        cell_center_pos: Position,
+    ) -> Position {
+        /// How far out from the chest cell center the coins land.
+        const DROP_DIST: f32 = 0.85;
+
+        let dungeons = self.dungeons.read().await;
+        let dir = dungeons
+            .get(entrance_id)
+            .and_then(|rt| rt.layouts.get((depth - 1) as usize))
+            .and_then(|layout| {
+                let prop = layout.props.get(prop_id as usize)?;
+                let (x, z) = (prop.x, prop.z);
+                // Pick the back wall the same way the client does (N, S, W, E),
+                // then step toward the opposite (opening) side.
+                let (cdx, cdz) = if !layout.is_carved(x, z - 1) {
+                    (0, 1)
+                } else if !layout.is_carved(x, z + 1) {
+                    (0, -1)
+                } else if !layout.is_carved(x - 1, z) {
+                    (1, 0)
+                } else if !layout.is_carved(x + 1, z) {
+                    (-1, 0)
+                } else {
+                    (0, 0)
+                };
+                // Only step out if the opening cell is actually walkable floor.
+                if (cdx, cdz) != (0, 0) && layout.is_carved(x + cdx, z + cdz) {
+                    Some((cdx as f32, cdz as f32))
+                } else {
+                    None
+                }
+            });
+
+        match dir {
+            Some((dx, dz)) => Position {
+                x: cell_center_pos.x + dx * DROP_DIST,
+                y: cell_center_pos.y,
+                z: cell_center_pos.z + dz * DROP_DIST,
             },
-        )
-        .await;
+            None => cell_center_pos,
+        }
     }
 
     /// Shared handler for a click-to-interact dungeon prop (break a barrel/crate
     /// or open a chest). Validates the prop's kind, the player's floor and
     /// proximity to it, then claims the interaction in the runtime set chosen by
     /// `select_state`. On a fresh claim it broadcasts `on_success` to nearby
-    /// players (the actor included); a failed check rejects the actor with a
-    /// reason built from `noun`. Silent no-op for a missing dungeon/prop/player,
-    /// the wrong prop kind, or an already-claimed prop.
+    /// players (the actor included) and returns the prop's world position (so
+    /// the caller can spawn loot there); a failed check rejects the actor with a
+    /// reason built from `noun`. Returns `None` (silent no-op) for a missing
+    /// dungeon/prop/player, the wrong prop kind, or an already-claimed prop.
     #[allow(clippy::too_many_arguments)]
     async fn interact_with_dungeon_prop(
         &self,
@@ -300,30 +377,29 @@ impl GameState {
         is_kind: impl Fn(PropKind) -> bool,
         select_state: impl Fn(&mut DungeonRuntime) -> &mut HashMap<u8, HashSet<u32>>,
         on_success: ServerMessage,
-    ) {
+    ) -> Option<Position> {
         if depth == 0 {
-            return;
+            return None;
         }
-        let Some(entrance) = self.dungeon_defs.get(entrance_id).cloned() else {
-            return;
-        };
+        let entrance = self.dungeon_defs.get(entrance_id).cloned()?;
         self.ensure_dungeon_runtime(entrance_id).await;
 
         let (player_pos, player_floor) = {
             let players = self.players.read().await;
             match players.get(player_id) {
                 Some(p) if p.health > 0 => (p.position.clone(), p.floor_level),
-                _ => return,
+                _ => return None,
             }
         };
 
         // Validate against the layout + claim the interaction under the dungeon
-        // lock. `Some(Err)` → reject with a reason, `Some(Ok)` → newly claimed,
-        // `None` → already claimed (silent no-op).
-        let outcome: Option<Result<(), String>> = {
+        // lock. `Some(Err)` → reject with a reason, `Some(Ok(pos))` → newly
+        // claimed (with the prop's world position), `None` → already claimed or
+        // missing (silent no-op).
+        let outcome: Option<Result<Position, String>> = {
             let mut dungeons = self.dungeons.write().await;
             let Some(rt) = dungeons.get_mut(entrance_id) else {
-                return;
+                return None;
             };
             let prop = match rt
                 .layouts
@@ -331,10 +407,10 @@ impl GameState {
                 .and_then(|l| l.props.get(prop_id as usize))
             {
                 Some(p) => *p,
-                None => return,
+                None => return None,
             };
             if !is_kind(prop.kind) {
-                return;
+                return None;
             }
             if player_floor != -(depth as i8) {
                 Some(Err(format!("You must be on the {noun}'s floor")))
@@ -345,7 +421,7 @@ impl GameState {
                 if dx * dx + dz * dz > PROP_INTERACT_RANGE * PROP_INTERACT_RANGE {
                     Some(Err(format!("Too far from the {noun}")))
                 } else if select_state(rt).entry(depth).or_default().insert(prop_id) {
-                    Some(Ok(()))
+                    Some(Ok(prop_pos))
                 } else {
                     None
                 }
@@ -356,8 +432,9 @@ impl GameState {
             Some(Err(reason)) => {
                 self.send_direct_message(player_id, ServerMessage::InteractionRejected { reason })
                     .await;
+                None
             }
-            Some(Ok(())) => {
+            Some(Ok(prop_pos)) => {
                 self.send_direct_message_to_players_within_position(
                     &player_pos,
                     player_floor,
@@ -366,8 +443,9 @@ impl GameState {
                     None,
                 )
                 .await;
+                Some(prop_pos)
             }
-            None => {}
+            None => None,
         }
     }
 

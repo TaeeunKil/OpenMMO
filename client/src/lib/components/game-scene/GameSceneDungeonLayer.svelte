@@ -25,7 +25,6 @@
   import { objectManager } from '../../managers/objectManager'
   import { loadGLB } from '../../utils/gltfCache'
   import { rotatedRectAabb } from '../../utils/objectFootprint'
-  import { createRng } from '../../utils/simplex-noise'
   import type { DoorLeaf } from '../../utils/dungeon-geometry'
   import { networkManager } from '../../network/socket'
   import {
@@ -71,10 +70,6 @@
    *  static `chest.glb`) so a click can play the lid-open clip. */
   const CHEST_ANIMATED_ID = 'chest_animated'
   const CHEST_OPEN_CLIP = 'ChestOpen'
-  const COIN_SPILL_MODEL_PATH = '/models/objects/coin_pile_spill.glb'
-  const COIN_SPILL_FAN_DEG = 70
-  const COIN_SPILL_MIN_DIST = 0.55
-  const COIN_SPILL_MAX_DIST = 0.9
   /** How far the open lid's rear corner reaches behind the chest origin (along
    *  local −Z): the lid swings up and ~105° back over the hinge. Measured from
    *  chest_animated.glb. The chest is pushed this far (less the half-cell it
@@ -97,16 +92,15 @@
     broken: boolean
     /** Chest only: whether its lid-open animation has been started. */
     opened?: boolean
-    /** Chest only: the coin spill spawned when the chest opens. */
-    coinSpill?: THREE.Object3D
   }
   let propEntries = new Map<number, PropEntry>()
   /** The chest lid-open clip, captured once from the animated chest GLB and
    *  shared by every chest clone (each gets its own AnimationMixer). */
   let chestOpenClip: THREE.AnimationClip | null = null
-  /** One-shot prop mixers (chest lid-open + coin-spill clips), ticked each
-   *  frame. Each clip is LoopOnce + clampWhenFinished, so it holds its final
-   *  pose once done. Cleared with the props on a floor rebuild. */
+  /** One-shot prop mixers (the chest lid-open clip), ticked each frame. The
+   *  clip is LoopOnce + clampWhenFinished, so it holds its final pose once
+   *  done. Cleared with the props on a floor rebuild. The spilled coin pile is
+   *  no longer rendered here — it's a pickable ground item (see groundItem). */
   let propMixers: THREE.AnimationMixer[] = []
 
   const root = new THREE.Group()
@@ -521,77 +515,11 @@
     }
   }
 
-  /** FNV-1a hash of a string → 32-bit seed for `createRng` (deterministic
-   *  per-prop scatter that survives reloads). */
-  function hashKey(key: string): number {
-    let h = 2166136261
-    for (let i = 0; i < key.length; i++) {
-      h ^= key.charCodeAt(i)
-      h = Math.imul(h, 16777619)
-    }
-    return h >>> 0
-  }
-
-  async function spawnCoinSpill(entry: PropEntry, instant: boolean, key: string) {
-    // openChest guards `entry.opened` before calling, so this runs once per
-    // chest; the `coinSpill` check just bails on the already-spawned case.
-    if (entry.coinSpill) return
-    const chest = entry.clones[0]
-    if (!chest) return
-
-    let template: THREE.Object3D
-    let clip: THREE.AnimationClip | null = null
-    try {
-      const gltf = await loadGLB(COIN_SPILL_MODEL_PATH)
-      template = gltf.scene
-      clip = gltf.animations[0] ?? null
-    } catch {
-      return
-    }
-    // Bail if the floor changed, the chest reverted, or a rebuild replaced this
-    // entry (e.g. a debug reset landed during the load) — otherwise the clone
-    // would attach to a props group it's no longer tracked in and leak.
-    if (key !== builtKey || propEntries.get(entry.propId) !== entry || !entry.opened) {
-      return
-    }
-
-    const clone = template.clone()
-    const yaw = chest.rotation.y
-    const rng = createRng(hashKey(`${key}:${entry.propId}:coin-spill`))
-    const angle = ((rng() - 0.5) * COIN_SPILL_FAN_DEG * Math.PI) / 180
-    const dist =
-      COIN_SPILL_MIN_DIST + rng() * (COIN_SPILL_MAX_DIST - COIN_SPILL_MIN_DIST)
-    const dir = yaw + angle
-
-    // The model rests on the floor at its own origin, so seat it at the floor
-    // plane (propsGroup is already offset to the floor's Y). The GLB clip bakes
-    // the rise (≈+0.45m) and fall, so there's no manual height tween. The
-    // spill's source is on the model's local −Z, so face −Z back toward the
-    // chest (yaw = dir) to read as pouring out toward the landing spot.
-    clone.position.set(
-      chest.position.x + Math.sin(dir) * dist,
-      0,
-      chest.position.z + Math.cos(dir) * dist
-    )
-    clone.rotation.y = dir
-    tagDecorative(clone)
-    propsGroup.add(clone)
-    entry.coinSpill = clone
-
-    if (clip) {
-      const mixer = new THREE.AnimationMixer(clone)
-      const action = mixer.clipAction(clip)
-      action.loop = THREE.LoopOnce
-      action.clampWhenFinished = true
-      action.play()
-      if (instant) mixer.setTime(clip.duration) // already-open: jump to settled pose
-      propMixers.push(mixer)
-    }
-  }
-
   /** Start (or snap to the end of) a chest's lid-open animation. Each chest gets
    *  its own mixer bound to its clone; the shared clip animates the `chest_lid`
-   *  node, so cloning by name resolves correctly. */
+   *  node, so cloning by name resolves correctly. The coins the chest spills are
+   *  spawned server-side as a pickable ground item, rendered by the ground-item
+   *  layer — not here. */
   function openChest(entry: PropEntry, instant: boolean) {
     if (entry.opened) return
     const clone = entry.clones[0]
@@ -606,7 +534,6 @@
       if (instant) mixer.setTime(chestOpenClip.duration) // already-open: skip the swing
       propMixers.push(mixer)
     }
-    void spawnCoinSpill(entry, instant, builtKey)
   }
 
   /** Cache the up-shaft sub-group's meshes + world AABB for the fade pass.
@@ -844,7 +771,7 @@
   }
 
   /** Per-frame: stair-shaft floor transitions + chest proximity. `deltaMs`
-   *  advances chest lid-open and coin-spill animations. */
+   *  advances the chest lid-open animation. */
   export function update(
     playerX: number,
     playerY: number,

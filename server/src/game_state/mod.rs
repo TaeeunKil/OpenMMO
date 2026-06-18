@@ -66,6 +66,11 @@ mod tests;
 /// plausibly matter. Same physical radius the agent-client perceives with.
 pub(crate) const AGENT_EVENT_DELIVERY_RADIUS: f32 = onlinerpg_shared::NPC_SIGHT_RADIUS;
 
+/// Item def id for the loose-coin pickup spilled by an opened dungeon chest
+/// prop. It never enters a bag — picking it up credits a few copper straight
+/// to the player's wallet (see `pickup_item`).
+pub(crate) const COIN_PILE_ITEM_ID: &str = "coin_pile";
+
 #[derive(Default)]
 struct IdState {
     next_player_number: u32,

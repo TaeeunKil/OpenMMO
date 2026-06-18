@@ -424,6 +424,14 @@ impl super::GameState {
             return;
         }
 
+        // The dungeon coin pile is currency, not a bag item: picking it up
+        // credits a few copper to the wallet instead of taking inventory space.
+        if ground_item.item_def_id == super::COIN_PILE_ITEM_ID {
+            self.pickup_coin_pile(player_id, instance_id, &ground_item, player_floor)
+                .await;
+            return;
+        }
+
         let item_weight = self.item_defs.weight(&ground_item.item_def_id);
         let max_weight = self.max_carry_weight(player_id).await;
 
@@ -470,6 +478,52 @@ impl super::GameState {
         self.send_inventory_snapshot(player_id, snapshot).await;
         self.send_direct_message_to_players_within_position(
             &item_position,
+            player_floor,
+            super::AGENT_EVENT_DELIVERY_RADIUS,
+            ServerMessage::GroundItemRemoved { instance_id },
+            None,
+        )
+        .await;
+    }
+
+    /// Pick up a dungeon coin pile: claim it (first picker wins), credit a
+    /// random 1–10 copper to the wallet, then broadcast its removal to nearby
+    /// players. Skips the bag/weight path entirely — it's currency, not loot.
+    async fn pickup_coin_pile(
+        &self,
+        player_id: &PlayerId,
+        instance_id: u64,
+        ground_item: &GroundItem,
+        player_floor: i8,
+    ) {
+        // Claim the pile under the ground-items lock so two players racing for
+        // the same pile can't both be paid.
+        {
+            let mut ground_items = self.ground_items.write().await;
+            if ground_items.remove(&instance_id).is_none() {
+                self.send_inventory_error(player_id, "Item no longer exists")
+                    .await;
+                return;
+            }
+        }
+
+        let copper: i64 = rand::thread_rng().gen_range(1..=10);
+        let new_gold = {
+            let mut gold_map = self.player_gold.write().await;
+            let wallet = gold_map.entry(player_id.clone()).or_insert(0);
+            *wallet += copper;
+            *wallet
+        };
+        self.mark_dirty(player_id).await;
+        self.send_direct_message(player_id, ServerMessage::GoldUpdate { gold: new_gold })
+            .await;
+        info!(
+            "Player {} picked up a coin pile: +{} copper",
+            player_id, copper
+        );
+
+        self.send_direct_message_to_players_within_position(
+            &ground_item.position,
             player_floor,
             super::AGENT_EVENT_DELIVERY_RADIUS,
             ServerMessage::GroundItemRemoved { instance_id },
