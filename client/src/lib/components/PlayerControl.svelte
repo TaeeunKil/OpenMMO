@@ -738,6 +738,20 @@
     if (floor < fib) return floor
     const ent = dungeonManager.entrancePos
     if (!ent) return get(currentDungeonDepth) < 1 ? 0 : floor
+    // Target the floor that is currently SHOWN to the player, independent of
+    // logical depth: when underground (depth ≥ 1) or anywhere on the entrance
+    // shaft (where the floor-1 room is already rendered), a click targets that
+    // dungeon floor rather than being re-classified as a surface click and
+    // routed back out the entrance. Only off the shaft on the open surface do we
+    // fall through to the surface-vs-floor Y heuristic below.
+    const inDungeonView =
+      get(currentDungeonDepth) >= 1 ||
+      (currentPlayer != null &&
+        dungeonManager.isOnEntranceShaft(
+          currentPlayer.position.x,
+          currentPlayer.position.z
+        ))
+    if (inDungeonView) return floor
     const depthOfFloor = floor - fib + 1
     const surfaceDist = Math.abs(y - ent.y)
     const floorDist = Math.abs(y - dungeonManager.floorY(depthOfFloor))
@@ -754,6 +768,10 @@
     dungeonManager.clearPendingOpen()
     const pickupAfterArrival = options.pickupAfterArrival ?? null
 
+    // Start A* from the player's current passability floor — on a stair shaft
+    // that is the shaft's keyed (lower) floor (see currentPassabilityFloor /
+    // upShaftPathfindingFloor), which differs from the clicked room's floor, so
+    // the search traverses the stairs instead of being confined to one floor.
     runMoveRequest({
       clickPosition,
       pickupAfterArrival,

@@ -103,10 +103,13 @@ export interface DungeonEntrance {
 const LANDING_CELLS = 1.0
 /** Hysteresis (in run cells) around the switch point for floor switches. */
 const SWITCH_HYSTERESIS = 0.3
-/** Fraction of the shaft run at which the rendered floor switches. Low (not the
- *  0.5 midpoint) so a short descent already reveals the floor below — and,
- *  symmetrically, a climb keeps the lower floor visible until near the top. */
-const DEPTH_SWITCH_FRACTION = 0.3
+/** Fraction of the shaft run at which the rendered floor switches — well before
+ *  the 0.5 midpoint, so a short descent already reveals (and adopts as logical)
+ *  the floor below, and symmetrically a climb keeps the lower floor visible
+ *  until near the top. Kept low so the shown floor and the logical floor (which
+ *  drives click floor-resolution and pathfinding) agree early: a click then
+ *  moves you within the room you see instead of routing back out the entrance. */
+const DEPTH_SWITCH_FRACTION = 0.2
 /** Player collision footprint radius (m) — matches player-physics. */
 const PLAYER_RADIUS = 0.3
 /** Entrance wall thickness (m). Single source of truth, shared with the mesh
@@ -337,6 +340,19 @@ class DungeonManager {
     if (t === null) return null
     if (t >= constants().shaftLen - 1) return null
     return depth === 1 ? 0 : this.passabilityFloor(depth - 1)
+  }
+
+  /**
+   * Whether (x, z) sits on the entrance shaft's footprint (floor 1's up-shaft,
+   * which connects the surface to floor 1). True even on the top landing, so a
+   * player standing at the very mouth of the stairs counts as "in the dungeon
+   * view" — the floor-1 room is what's shown there, so clicks should target it
+   * rather than the surface, regardless of the still-zero logical depth.
+   */
+  isOnEntranceShaft(x: number, z: number): boolean {
+    const first = this.layouts[0]
+    if (!first) return false
+    return this.shaftRunPos(first.upShaft, x, z) !== null
   }
 
   /**

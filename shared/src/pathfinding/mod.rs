@@ -408,4 +408,57 @@ mod tests {
             result.waypoints
         );
     }
+
+    /// Reproduces the dungeon entrance-shaft bug: a player standing on an
+    /// *intermediate* stairwell cell clicks a cell on the connected floor.
+    /// The shaft's intermediate cells are keyed to the lower floor (0), so the
+    /// query MUST start on floor 0 and end on floor 1 for A* to traverse the
+    /// stairs. The (buggy) client override forced start_floor == goal_floor,
+    /// which confines the search and strands the player.
+    #[test]
+    fn mid_stairwell_start_reaches_connected_floor() {
+        let (id, rp) = make_two_floor_stairwell();
+        let mut cache = PassabilityCache::new();
+        cache.insert(id, rp);
+
+        // Standing mid-shaft at cell (0,1) — an intermediate stair step keyed to
+        // floor 0. Goal is the room on floor 1 at (2,3). Start on the shaft's
+        // keyed (lower) floor so the stairwell is traversable.
+        let result = find_path(0.5, 1.5, 0, 2.5, 3.5, 1, &cache, 500);
+        assert!(result.found, "mid-shaft path to the room should be found");
+        assert!(
+            result.waypoints.last().map(|w| w.floor) == Some(1),
+            "path must arrive on the room floor: {:?}",
+            result.waypoints
+        );
+        // It must NOT detour to the far (z=0) landing before heading to the room
+        // at z=3 — every emitted (regular-key) waypoint is on the way up.
+        assert!(
+            result.waypoints.iter().all(|w| w.z >= 1.0),
+            "path must not detour back down to the entry landing: {:?}",
+            result.waypoints
+        );
+    }
+
+    /// Confirms the override is the bug: starting the SAME mid-shaft query on
+    /// the goal floor (start_floor == goal_floor) confines A* and fails to
+    /// produce a path to the room — the player gets stranded / re-routed.
+    #[test]
+    fn mid_stairwell_start_on_goal_floor_is_stranded() {
+        let (id, rp) = make_two_floor_stairwell();
+        let mut cache = PassabilityCache::new();
+        cache.insert(id, rp);
+
+        let result = find_path(0.5, 1.5, 1, 2.5, 3.5, 1, &cache, 500);
+        let reaches_room = result
+            .waypoints
+            .last()
+            .map(|w| (w.x - 2.5).abs() < 0.6 && (w.z - 3.5).abs() < 0.6)
+            .unwrap_or(false);
+        assert!(
+            !reaches_room,
+            "confined start_floor==goal_floor must NOT reach the room cleanly: {:?}",
+            result.waypoints
+        );
+    }
 }

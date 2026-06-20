@@ -1028,7 +1028,7 @@
     {currentPlayerState}
     {terrainMeshes}
     housingGroup={housingLayerRef?.getGroup() ?? null}
-    dungeonGroup={dungeonLayerRef?.getGroup() ?? null}
+    dungeonGroup={dungeonLayerRef?.getFloorGroup() ?? null}
     doorMeshes={[
       ...(housingLayerRef?.getDoorMeshes() ?? []),
       ...(dungeonLayerRef?.getDoorMeshes() ?? []),

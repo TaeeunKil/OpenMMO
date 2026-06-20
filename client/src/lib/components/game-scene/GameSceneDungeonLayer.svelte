@@ -880,9 +880,22 @@
     return root
   }
 
-  /** Raycast targets for click-to-move while underground. */
-  export function getGroundMeshes(): THREE.Object3D[] {
-    return currentGroup ? [currentGroup] : []
+  /**
+   * The active floor's group — the click-to-move ground raycast target while
+   * underground. Returns ONLY the current floor (its walkable slab + up/down
+   * shaft stairs; the wall runs inside it are already non-pickable), NOT the
+   * whole dungeon `root`. The root's sibling groups — the surface entrance
+   * shell (hidden underground but, since THREE's raycaster does not skip
+   * invisible objects, still pickable; its walls/roof sit well above the floor),
+   * its swing doors, decorative props and debug overlays — would otherwise
+   * intercept a click meant for the floor near the stairs and resolve it to a
+   * bogus cell up at the entrance, sending the player back up. Touches the
+   * dungeon stores so the binding refreshes on enter/exit and floor change.
+   */
+  export function getFloorGroup(): THREE.Group | null {
+    void $currentDungeonId
+    void $currentDungeonDepth
+    return currentGroup
   }
 
   /** Raycast targets for clicking breakable props (barrels/crates). Only the
