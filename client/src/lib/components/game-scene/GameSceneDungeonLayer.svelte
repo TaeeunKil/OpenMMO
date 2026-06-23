@@ -94,6 +94,10 @@
     opened?: boolean
   }
   let propEntries = new Map<number, PropEntry>()
+  /** Flame world-positions of the current floor's wall torches. Read every frame
+   *  by the players layer (via a provider prop) to drive the wall-torch light
+   *  pool + the unified shadow light. Swapped on floor rebuild, cleared on exit. */
+  let wallTorchPositions: THREE.Vector3[] = []
   /** The chest lid-open clip, captured once from the animated chest GLB and
    *  shared by every chest clone (each gets its own AnimationMixer). */
   let chestOpenClip: THREE.AnimationClip | null = null
@@ -124,6 +128,12 @@
   const PROP_STACK_NEST = 0.97
   /** Wall torch: base height up the (3m) wall — flame sits ~2.3m. */
   const TORCH_MOUNT_Y = 1.7
+  /** Wall torch: how far the flame sits above the mount base (so the light is
+   *  placed at the flame, not the bracket). */
+  const TORCH_FLAME_RISE = 0.6
+  /** Wall torch: how far the flame reaches off the wall into the room (along the
+   *  model's local +Z), so the light source clears the wall surface. */
+  const TORCH_FLAME_REACH = 0.25
   /** Wall torch: how far the mount's back face seats *into* the wall from its
    *  room-facing boundary. 0 = back face flush on the wall surface. */
   const TORCH_WALL_INSET = 0
@@ -192,6 +202,7 @@
   function clearProps() {
     for (const c of [...propsGroup.children]) propsGroup.remove(c)
     propEntries = new Map()
+    wallTorchPositions = []
     for (const m of propMixers) m.stopAllAction()
     propMixers = []
   }
@@ -237,7 +248,8 @@
     prop: DungeonFloorLayout['props'][number],
     key: string,
     depth: number,
-    carvedAt: (x: number, z: number) => boolean
+    carvedAt: (x: number, z: number) => boolean,
+    torchPositions: THREE.Vector3[]
   ) {
     // Chests render from the animated GLB (lid rigged for the open clip); the
     // other props use their own catalog model.
@@ -280,6 +292,17 @@
       clone.position.set(px, TORCH_MOUNT_Y, pz)
       tagDecorative(clone)
       group.add(clone)
+      // Record the flame's world position for the players-layer light pool. The
+      // flame rises off the bracket and reaches off the wall along the model's
+      // local +Z (here baked into the clone yaw), so push the light out there.
+      const yaw = clone.rotation.y
+      torchPositions.push(
+        new THREE.Vector3(
+          dungeonManager.originX + px + Math.sin(yaw) * TORCH_FLAME_REACH,
+          dungeonManager.floorY(depth) + TORCH_MOUNT_Y + TORCH_FLAME_RISE,
+          dungeonManager.originZ + pz + Math.cos(yaw) * TORCH_FLAME_REACH
+        )
+      )
       entries.set(index, {
         clones: [clone],
         kind: prop.kind,
@@ -481,6 +504,7 @@
       dungeonManager.originZ
     )
     const entries = new Map<number, PropEntry>()
+    const torchPositions: THREE.Vector3[] = []
 
     const grid = dungeonManager.consts.grid
     const carvedAt = (x: number, z: number) =>
@@ -492,7 +516,7 @@
       if (broken.has(index) && isBreakable(prop.kind)) {
         await addBrokenProp(group, entries, index, prop, key)
       } else {
-        await addNormalProp(group, entries, index, prop, key, depth, carvedAt)
+        await addNormalProp(group, entries, index, prop, key, depth, carvedAt, torchPositions)
       }
       if (key !== builtKey) return // floor changed mid-load — abandon
     }
@@ -504,6 +528,7 @@
     propsGroup.position.copy(group.position)
     while (group.children.length) propsGroup.add(group.children[0])
     propEntries = entries
+    wallTorchPositions = torchPositions
     // Catch any breaks/opens that landed while the GLBs were loading. Chests
     // already open at build time snap to the open pose (no entrance swing).
     reconcileBrokenProps(depth, key)
@@ -915,6 +940,14 @@
 
   export function getGroup(): THREE.Group {
     return root
+  }
+
+  /** Flame world-positions of the current floor's wall torches, for the players
+   *  layer's wall-torch light pool + unified shadow light. Returns the live array
+   *  (swapped on rebuild, emptied on exit), so callers must read it per frame
+   *  rather than caching it. */
+  export function getWallTorchPositions(): THREE.Vector3[] {
+    return wallTorchPositions
   }
 
   /**

@@ -62,11 +62,12 @@ export function applyTorchFlickerWorld(
   deltaTime: number,
   baseX: number,
   baseY: number,
-  baseZ: number
+  baseZ: number,
+  intensityScale = 1
 ): number {
   const t = flickerTime + deltaTime
   const f = computeFlicker(t)
-  light.intensity = TORCH_BASE_INTENSITY + f.intensity
+  light.intensity = (TORCH_BASE_INTENSITY + f.intensity) * intensityScale
   light.position.x = baseX + f.dx
   light.position.y = baseY + f.dy
   light.position.z = baseZ

@@ -1040,6 +1040,7 @@
     {playerAttackDuration}
     torchEffectsDisabled={!graphicsPreset.enableTorchEffects}
     torchLightCastsShadow={graphicsPreset.enableTorchShadows}
+    wallTorchPositions={() => dungeonLayerRef?.getWallTorchPositions() ?? []}
     heightManager={terrainHeightManager}
     onStateChange={handlePlayerStateChange}
     onPlayerControlEvent={enqueuePlayerControlEvent}

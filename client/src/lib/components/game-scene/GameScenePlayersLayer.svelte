@@ -57,6 +57,10 @@
     currentPlayerModel?: PlayerModel | null
     otherPlayerModels?: (PlayerModel | undefined)[]
     torchLightCastsShadow?: boolean
+    /** Per-frame provider of the current dungeon floor's wall-torch flame
+     *  world-positions (empty when not underground). Pulled fresh each frame —
+     *  the array is swapped on floor rebuild, so it must not be cached. */
+    wallTorchPositions?: () => THREE.Vector3[]
   }
 
   let {
@@ -87,6 +91,7 @@
     currentPlayerModel = $bindable<PlayerModel | null>(null),
     otherPlayerModels = $bindable<(PlayerModel | undefined)[]>([]),
     torchLightCastsShadow = true,
+    wallTorchPositions,
   }: Props = $props()
 
   // Sync attack animation duration to remote player manager
@@ -97,6 +102,7 @@
   let localFloorLevel = $derived(Math.max(0, $playerFloorLevel))
   let localHouseId = $derived($playerInsideHouseId)
   let localDungeonDepth = $derived($currentDungeonDepth)
+  let isUnderground = $derived(localDungeonDepth >= 1)
 
   function isRemotePlayerVisible(remoteFloorLevel: number, pos: { x: number; y: number; z: number }): boolean {
     // Dungeon: only players on the same depth are visible; from the
@@ -135,6 +141,36 @@
   const _unifiedTorchTmp = new THREE.Vector3()
   const _torchOffsetTmp = new THREE.Vector3()
 
+  // Wall-torch light pool: a *fixed* set of non-shadow PointLights, each parked
+  // on one of the N nearest dungeon wall torches so the floor glows even with no
+  // lit player torch around. Mounted only while underground (below), so the
+  // scene's PointLight count steps 1->1+N on dungeon entry and back on exit.
+  // That deviates from the unified light's "always-mounted, constant 1" rule on
+  // purpose: the unified light stays constant because remote torch-bearers come
+  // and go *mid-play* (a recompile stall there is visible), whereas this pool's
+  // count only changes on a dungeon enter/exit — a hard scene transition that
+  // already loads/unloads all the floor geometry, so its one-time (then cached)
+  // pipeline recompile is masked. Always-mounting these N everywhere instead
+  // would tax the whole overworld with N dead point lights it never needs.
+  // Within the dungeon the count is fixed (unused slots idle at intensity 0), so
+  // moving between rooms/floors never churns the pipeline. Shadow casting stays
+  // on the *single* unified light (below): when no player torch is lit it
+  // relocates to the nearest wall torch and casts its shadow there, matching how
+  // a remote player's torch is treated; that torch is then skipped here so it
+  // isn't double-lit.
+  const WALL_TORCH_POOL_SIZE = 6
+  /** Wall torches glow a touch dimmer than a held/player torch. */
+  const WALL_TORCH_INTENSITY_SCALE = 0.65
+  /** Beyond this (world metres) a pooled wall torch is left dark — keeps the
+   *  shadowless glow from bleeding through walls into far rooms. */
+  const WALL_TORCH_POOL_RANGE = 14
+  const WALL_TORCH_POOL_RANGE_SQ = WALL_TORCH_POOL_RANGE * WALL_TORCH_POOL_RANGE
+  const wallTorchSlots = Array.from({ length: WALL_TORCH_POOL_SIZE })
+  let wallTorchLights = $state<(THREE.PointLight | undefined)[]>([])
+  const wallTorchFlickerTimes = wallTorchSlots.map((_, i) => i * 0.7)
+  /** Scratch reused each frame to rank wall torches by distance to the player. */
+  const _wallTorchRanking: { idx: number; dist: number }[] = []
+
   function setTorchTargetFromPose(x: number, z: number, fallbackY: number, rotation: number): THREE.Vector3 {
     const y =
       dungeonManager.sampleHeightAt(x, z) ??
@@ -144,16 +180,23 @@
     return _unifiedTorchTmp.set(x + _torchOffsetTmp.x, y + _torchOffsetTmp.y, z + _torchOffsetTmp.z)
   }
 
-  function computeUnifiedTorchTarget(): THREE.Vector3 | null {
+  /** Pick the unified shadow light's target. Returns the world position plus, when
+   *  it landed on a wall torch, that torch's index (so the pool can skip it). */
+  function computeUnifiedTorchTarget(
+    wallPositions: THREE.Vector3[]
+  ): { target: THREE.Vector3; wallIdx: number } | null {
     if (torchEffectsDisabled) return null
     if (!currentPlayer) return null
     if (get(localTorchEquipped) || get(torchLightEnabled)) {
       const p = currentPlayer.position
-      return setTorchTargetFromPose(p.x, p.z, p.y, currentPlayer.rotation)
+      return { target: setTorchTargetFromPose(p.x, p.z, p.y, currentPlayer.rotation), wallIdx: -1 }
     }
+    // No lit player torch: the nearest lit source — remote torch or wall torch,
+    // ranked together by distance — takes the shadow-casting light.
     const playerPos = currentPlayer.position
-    let bestRp: PlayerState | null = null
     let bestDist = Infinity
+    let bestRp: PlayerState | null = null
+    let bestWallIdx = -1
     for (const [id, player] of otherPlayers) {
       const rp = remotePlayers.get(id)
       if (!player.torchOn || !rp || !remoteVisibility.get(id)) continue
@@ -163,23 +206,87 @@
       if (dist < bestDist) {
         bestDist = dist
         bestRp = rp
+        bestWallIdx = -1
       }
     }
-    if (!bestRp) return null
-    return setTorchTargetFromPose(bestRp.position.x, bestRp.position.z, bestRp.position.y, bestRp.rotation)
+    for (let i = 0; i < wallPositions.length; i++) {
+      const w = wallPositions[i]
+      const dx = w.x - playerPos.x
+      const dz = w.z - playerPos.z
+      const dist = dx * dx + dz * dz
+      if (dist < bestDist) {
+        bestDist = dist
+        bestRp = null
+        bestWallIdx = i
+      }
+    }
+    if (bestWallIdx >= 0) {
+      return { target: _unifiedTorchTmp.copy(wallPositions[bestWallIdx]), wallIdx: bestWallIdx }
+    }
+    if (bestRp) {
+      return {
+        target: setTorchTargetFromPose(bestRp.position.x, bestRp.position.z, bestRp.position.y, bestRp.rotation),
+        wallIdx: -1,
+      }
+    }
+    return null
+  }
+
+  /** Park the pool's lights on the nearest wall torches (skipping `occupiedIdx`,
+   *  already lit by the unified shadow light), idling the leftover slots. */
+  function updateWallTorchPool(
+    deltaTime: number,
+    wallPositions: THREE.Vector3[],
+    occupiedIdx: number
+  ) {
+    if (wallTorchLights.length === 0) return
+    const playerPos = currentPlayer?.position
+    _wallTorchRanking.length = 0
+    if (playerPos) {
+      for (let i = 0; i < wallPositions.length; i++) {
+        if (i === occupiedIdx) continue
+        const w = wallPositions[i]
+        const dx = w.x - playerPos.x
+        const dz = w.z - playerPos.z
+        const dist = dx * dx + dz * dz
+        if (dist <= WALL_TORCH_POOL_RANGE_SQ) _wallTorchRanking.push({ idx: i, dist })
+      }
+      _wallTorchRanking.sort((a, b) => a.dist - b.dist)
+    }
+    for (let slot = 0; slot < wallTorchLights.length; slot++) {
+      const light = wallTorchLights[slot]
+      if (!light) continue
+      const ranked = _wallTorchRanking[slot]
+      if (ranked) {
+        const w = wallPositions[ranked.idx]
+        wallTorchFlickerTimes[slot] = applyTorchFlickerWorld(
+          light, wallTorchFlickerTimes[slot], deltaTime, w.x, w.y, w.z,
+          WALL_TORCH_INTENSITY_SCALE,
+        )
+      } else {
+        light.intensity = 0
+      }
+    }
   }
 
   export function updateUnifiedTorchFlicker(deltaTime: number) {
-    if (!unifiedTorchLight) return
-    const target = computeUnifiedTorchTarget()
-    if (target) {
-      unifiedTorchFlickerTime = applyTorchFlickerWorld(
-        unifiedTorchLight, unifiedTorchFlickerTime, deltaTime,
-        target.x, target.y, target.z,
-      )
-    } else {
-      unifiedTorchLight.intensity = 0
+    const wallPositions =
+      isUnderground && !torchEffectsDisabled ? wallTorchPositions?.() ?? [] : []
+    let occupiedWallIdx = -1
+    if (unifiedTorchLight) {
+      const result = computeUnifiedTorchTarget(wallPositions)
+      if (result) {
+        occupiedWallIdx = result.wallIdx
+        unifiedTorchFlickerTime = applyTorchFlickerWorld(
+          unifiedTorchLight, unifiedTorchFlickerTime, deltaTime,
+          result.target.x, result.target.y, result.target.z,
+          occupiedWallIdx >= 0 ? WALL_TORCH_INTENSITY_SCALE : 1,
+        )
+      } else {
+        unifiedTorchLight.intensity = 0
+      }
     }
+    updateWallTorchPool(deltaTime, wallPositions, occupiedWallIdx)
   }
 
   export function getUnifiedTorchLight(): THREE.PointLight | undefined {
@@ -311,5 +418,23 @@
       shadow.normalBias={0.005}
       shadow.radius={2}
     />
+
+    <!-- Wall-torch glow pool: a fixed N of shadowless point lights, parked on the
+         nearest wall torches each frame (see updateWallTorchPool). Mounted only
+         underground; the slot count is constant so the light count never churns
+         mid-floor. -->
+    {#if isUnderground}
+      {#each wallTorchSlots as _slot, i (i)}
+        <T.PointLight
+          bind:ref={wallTorchLights[i]}
+          position={[0, 0, 0]}
+          color="#ffcc66"
+          intensity={0}
+          distance={TORCH_BASE_DISTANCE}
+          decay={TORCH_BASE_DECAY}
+          castShadow={false}
+        />
+      {/each}
+    {/if}
   {/if}
 {/if}
