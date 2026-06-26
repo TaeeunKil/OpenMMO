@@ -1,0 +1,257 @@
+//! [`MonsterBrain`] — the per-monster behavior tree instance: its state, the
+//! main tick entry point, and damage/death event handlers. Behavior tree
+//! evaluation lives in [`super::behavior`]; movement and state transitions in
+//! [`super::movement`].
+
+use super::tree::BehaviorStatus;
+use super::{
+    AiCommand, AiState, BehaviorTree, NearbyPlayer, PathProvider, TickResult, DEFAULT_ATTACK_RANGE,
+    DEFAULT_CHASE_RANGE, DEFAULT_HIT_STAGGER_MS, DEFAULT_MAX_MOVE_DIST, DEFAULT_MIN_MOVE_DIST,
+};
+use crate::pathfinding::PathWaypoint;
+use crate::{MonsterState, Position};
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonsterBrain {
+    pub monster_id: String,
+    pub monster_type: String,
+    pub behavior: String,
+    pub position: Position,
+    pub rotation: f32,
+    pub health: u32,
+    pub max_health: u32,
+    pub(super) state: AiState,
+    pub(super) state_timer_ms: f32,
+    pub(super) target_player_id: Option<String>,
+    pub(super) walk_speed: f32,
+    pub(super) run_speed: f32,
+    pub(super) attack_range: f32,
+    pub(super) chase_range: f32,
+    pub(super) attack_cooldown_ms: f32,
+    pub(super) move_speed: f32,
+    pub(super) target_position: Option<Position>,
+    pub(super) waypoints: Vec<PathWaypoint>,
+    pub(super) current_waypoint_idx: usize,
+    pub(super) path_elapsed_ms: f32,
+    pub(super) last_known_target_pos: Option<Position>,
+    pub(super) spawn_position: Position,
+    /// Passability floor for path queries. 0 = overworld/house ground;
+    /// dungeon monsters use their depth's passability floor index.
+    #[serde(default)]
+    pub path_floor: u8,
+}
+
+impl MonsterBrain {
+    pub fn new(
+        monster_id: String,
+        monster_type: String,
+        behavior: String,
+        position: Position,
+        health: u32,
+        max_health: u32,
+        walk_speed: f32,
+        run_speed: f32,
+        attack_range: f32,
+        chase_range: f32,
+        attack_cooldown_ms: f32,
+    ) -> Self {
+        Self {
+            monster_id,
+            monster_type,
+            behavior,
+            rotation: 0.0,
+            health,
+            max_health,
+            state: AiState::Idle,
+            state_timer_ms: 0.0,
+            target_player_id: None,
+            walk_speed,
+            run_speed,
+            attack_range: if attack_range > 0.0 {
+                attack_range
+            } else {
+                DEFAULT_ATTACK_RANGE
+            },
+            chase_range: if chase_range > 0.0 {
+                chase_range
+            } else {
+                DEFAULT_CHASE_RANGE
+            },
+            attack_cooldown_ms,
+            move_speed: walk_speed,
+            target_position: None,
+            waypoints: Vec::new(),
+            current_waypoint_idx: 0,
+            path_elapsed_ms: 0.0,
+            last_known_target_pos: None,
+            spawn_position: position.clone(),
+            position,
+            path_floor: 0,
+        }
+    }
+
+    pub fn state(&self) -> AiState {
+        self.state
+    }
+
+    pub fn network_state(&self) -> MonsterState {
+        self.state.to_monster_state()
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.state == AiState::Dead
+    }
+
+    // =========================================================================
+    // Main tick
+    // =========================================================================
+
+    /// Build a `TickResult` snapshot of the brain's current pose plus `commands`.
+    fn tick_result(&self, commands: Vec<AiCommand>) -> TickResult {
+        TickResult {
+            commands,
+            position: self.position.clone(),
+            rotation: self.rotation,
+            state: self.state.to_monster_state(),
+        }
+    }
+
+    pub fn tick_with_behavior_tree(
+        &mut self,
+        delta_ms: f32,
+        nearby_players: &[NearbyPlayer],
+        behavior_tree: &BehaviorTree,
+        path_provider: &dyn PathProvider,
+        rng: &mut impl Rng,
+    ) -> TickResult {
+        if self.state == AiState::Dead || self.health == 0 {
+            return self.tick_result(vec![]);
+        }
+
+        self.state_timer_ms += delta_ms;
+        self.path_elapsed_ms += delta_ms;
+        let mut commands = Vec::new();
+
+        if self.state == AiState::Hit {
+            if self.state_timer_ms < DEFAULT_HIT_STAGGER_MS {
+                return self.tick_result(commands);
+            }
+            self.state = AiState::Idle;
+            self.state_timer_ms = 0.0;
+        }
+
+        if matches!(self.state, AiState::Walk | AiState::Run) {
+            self.tick_patrol(delta_ms, &mut commands, path_provider, rng);
+        } else {
+            let status = self.eval_behavior_node(
+                &behavior_tree.root,
+                delta_ms,
+                nearby_players,
+                &mut commands,
+                path_provider,
+                rng,
+            );
+
+            if status == BehaviorStatus::Failure && self.state != AiState::Idle {
+                self.transition_to_idle(&mut commands);
+            }
+        }
+
+        self.tick_result(commands)
+    }
+
+    // =========================================================================
+    // Event handlers
+    // =========================================================================
+
+    /// Apply incoming damage and acquire `attacker_id` as the target. Returns
+    /// `false` if the brain is already dead or the hit was lethal (in which
+    /// case no further reaction should be produced).
+    fn apply_hit(&mut self, attacker_id: &str, hit: bool, damage: u32) -> bool {
+        if self.state == AiState::Dead {
+            return false;
+        }
+
+        self.health = self.health.saturating_sub(if hit { damage } else { 0 });
+        self.target_player_id = Some(attacker_id.to_string());
+        self.move_speed = self.run_speed;
+
+        if self.health == 0 {
+            self.state = AiState::Dead;
+            return false;
+        }
+
+        true
+    }
+
+    pub fn handle_hit_with_behavior_tree(
+        &mut self,
+        attacker_id: &str,
+        hit: bool,
+        damage: u32,
+    ) -> Vec<AiCommand> {
+        if !self.apply_hit(attacker_id, hit, damage) {
+            return vec![];
+        }
+
+        if hit {
+            self.state = AiState::Hit;
+            self.state_timer_ms = 0.0;
+            vec![self.make_move_cmd()]
+        } else {
+            vec![]
+        }
+    }
+
+    pub fn handle_death(&mut self) {
+        self.state = AiState::Dead;
+        self.health = 0;
+    }
+
+    // =========================================================================
+
+    fn tick_patrol(
+        &mut self,
+        delta_ms: f32,
+        commands: &mut Vec<AiCommand>,
+        path_provider: &dyn PathProvider,
+        rng: &mut impl Rng,
+    ) {
+        if self.target_position.is_none() {
+            self.transition_to_idle(commands);
+            return;
+        }
+
+        let reached = self.follow_path(delta_ms);
+        if reached {
+            if rng.gen::<f32>() < 0.5 {
+                self.transition_to_idle(commands);
+            } else {
+                self.transition_to_move(
+                    commands,
+                    DEFAULT_MIN_MOVE_DIST,
+                    DEFAULT_MAX_MOVE_DIST,
+                    path_provider,
+                    rng,
+                );
+            }
+        }
+    }
+
+    /// Build a `Move` command from the brain's current pose, defaulting the
+    /// target position to the current position when none is set.
+    pub(super) fn make_move_cmd(&self) -> AiCommand {
+        AiCommand::Move {
+            monster_id: self.monster_id.clone(),
+            position: self.position.clone(),
+            rotation: self.rotation,
+            state: self.state.to_monster_state(),
+            target_position: self
+                .target_position
+                .clone()
+                .unwrap_or(self.position.clone()),
+        }
+    }
+}
