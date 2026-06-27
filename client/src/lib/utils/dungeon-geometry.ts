@@ -42,6 +42,7 @@ import {
   shaftCoverRun,
   type DungeonDoorSeg,
   type DungeonFloorLayout,
+  type DungeonRoom,
   type DungeonShaft,
 } from '../managers/dungeonManager'
 
@@ -577,13 +578,13 @@ export interface InteriorDoor {
  * opening from the door's shoulder up to the wall top, its underside the same
  * quarter-ellipse dome as the door cap (so the rounded door fits beneath it).
  * Room-wall texture (matching the surrounding room walls), extruded to the
- * wall-run thickness and centred on the room↔corridor wall line. `northWall`
+ * wall-run thickness and centred on the room↔corridor wall line. `spansX`
  * ⇒ the door spans X (panel laid along X, thickness along Z); otherwise it spans
  * Z (rotated so the panel lies along Z, thickness along X).
  */
 function addInteriorDoorArch(
   archEntries: GeoEntry[],
-  northWall: boolean,
+  spansX: boolean,
   lat0: number,
   W: number,
   wallLine: number,
@@ -600,7 +601,7 @@ function addInteriorDoorArch(
   extrudeAndPlaceArch(
     archEntries,
     shape,
-    northWall,
+    spansX,
     lat0,
     wallLine,
     WALL_THICKNESS,
@@ -608,19 +609,56 @@ function addInteriorDoorArch(
   )
 }
 
+/** Which of a room's four walls a corridor mouth sits in. Packed into the door
+ *  id, so the values double as encoding lanes (0..3). */
+export const WALL_N = 0
+export const WALL_E = 1
+export const WALL_S = 2
+export const WALL_W = 3
+export type DungeonWall =
+  | typeof WALL_N
+  | typeof WALL_E
+  | typeof WALL_S
+  | typeof WALL_W
+
+/** All four walls, in scan order. */
+export const WALL_SIDES = [WALL_N, WALL_E, WALL_S, WALL_W] as const
+
+interface DoorWallInfo {
+  /** Door runs along X (north/south walls) rather than Z (east/west walls). */
+  spansX: boolean
+  /** Wall sits at the room's low-coordinate edge (north at min z, west at min
+   *  x), so its run is half a wall-thickness below the grid line, not above. */
+  outerLow: boolean
+  /** Unit direction the leaves swing as they open into the room. */
+  outX: number
+  outZ: number
+}
+
+/** Per-wall geometry, the single source of truth for door placement: the scan
+ *  derives the wall line and corridor neighbour from `spansX`/`outerLow`, and
+ *  `buildInteriorDoor` reads the swing and wall-plane offset from the same row. */
+const DOOR_WALL_INFO: Record<DungeonWall, DoorWallInfo> = {
+  [WALL_N]: { spansX: true, outerLow: true, outX: 0, outZ: 1 },
+  [WALL_E]: { spansX: false, outerLow: false, outX: -1, outZ: 0 },
+  [WALL_S]: { spansX: true, outerLow: false, outX: 0, outZ: -1 },
+  [WALL_W]: { spansX: false, outerLow: true, outX: 1, outZ: 0 },
+}
+
 /**
  * One interior room door across a corridor mouth: a pair of swinging leaves
  * (same half-heptagon shape as the surface entrance doors) plus a stone arch
- * filling the wall above the rounded cap. `northWall` ⇒ the mouth is in the
- * room's north wall (door spans X, opens south into the room); otherwise it is
- * the east wall (door spans Z, opens west into the room). `lat0`/`len` are the
- * opening's start cell and width along the wall; `wallLine` is the room↔corridor
- * grid line. Arch quads go to `archEntries` (room-wall texture, merged
- * statically); the returned leaves are added to the floor group and animated.
+ * filling the wall above the rounded cap. `wall` is which of the room's four
+ * walls (`WALL_N/E/S/W`) holds the mouth: north/south doors span X and swing
+ * along Z into the room, east/west span Z and swing along X. `lat0`/`len` are
+ * the opening's start cell and width along the wall; `wallLine` is the
+ * room↔corridor grid line. Arch quads go to `archEntries` (room-wall texture,
+ * merged statically); the returned leaves are added to the floor group and
+ * animated.
  */
 function buildInteriorDoor(
   depth: number,
-  northWall: boolean,
+  wall: DungeonWall,
   lat0: number,
   len: number,
   wallLine: number,
@@ -629,23 +667,21 @@ function buildInteriorDoor(
   archEntries: GeoEntry[]
 ): InteriorDoor {
   const halfW = len / 2
-  // Swing into the room: south (+Z) for a north wall, west (−X) for an east one.
-  const outX = northWall ? 0 : -1
-  const outZ = northWall ? 1 : 0
-  // The room wall run sits half its thickness outside the room boundary (a north
-  // wall at z = line − HALF, an east wall at x = line + HALF), so place the
-  // visible leaves and arch on that plane to keep them flush with the wall.
-  // The door id and the blocking segment stay on the integer grid line.
+  const { spansX, outerLow, outX, outZ } = DOOR_WALL_INFO[wall]
+  // The room wall run sits half its thickness outside the room boundary: below
+  // the grid line for low-coordinate walls (north/west), above for high
+  // (south/east). Place the visible leaves and arch on that plane to keep them
+  // flush with the wall; the door id and blocking segment stay on the grid line.
   const wallPlane =
-    wallLine + (northWall ? -WALL_HALF_THICKNESS : WALL_HALF_THICKNESS)
-  // north wall ≙ the entrance's along-Z case (door spans X at z=wallPlane).
-  const specs = doorLeafSpecs(northWall, lat0, lat0 + len, wallPlane)
+    wallLine + (outerLow ? -WALL_HALF_THICKNESS : WALL_HALF_THICKNESS)
+  // spansX ≙ the entrance's along-Z case (door spans X at z=wallPlane).
+  const specs = doorLeafSpecs(spansX, lat0, lat0 + len, wallPlane)
   const leaves = specs.map((s) => makeDoorLeaf(s, halfW, outX, outZ, mat))
-  const doorId = encodeInteriorDoorId(northWall, lat0, wallLine)
+  const doorId = encodeInteriorDoorId(wall, lat0, wallLine)
   tagDoorLeaves(leaves, depth, doorId)
-  addInteriorDoorArch(archEntries, northWall, lat0, len, wallPlane, wallTop)
+  addInteriorDoorArch(archEntries, spansX, lat0, len, wallPlane, wallTop)
   // Blocking segment along the wall line (floor-local; the layer adds origin).
-  const seg: DungeonDoorSeg = northWall
+  const seg: DungeonDoorSeg = spansX
     ? { doorId, ax: lat0, az: wallLine, bx: lat0 + len, bz: wallLine }
     : { doorId, ax: wallLine, az: lat0, bx: wallLine, bz: lat0 + len }
   return { depth, doorId, leaves, seg, open: 0 }
@@ -1257,7 +1293,7 @@ export function buildDungeonFloorGroup(
   }
   group.add(wallRunGroup)
 
-  // --- Interior room doors: a corridor mouth in a room's north or east wall
+  // --- Interior room doors: a corridor mouth in any of a room's four walls
   // gets a double door (same shape as the surface entrance) with a 30% chance.
   // Placement is hashed from the opening's coordinates so it's stable across
   // re-renders and matches the door-id the toggle packet uses. The arch above
@@ -1269,20 +1305,17 @@ export function buildDungeonFloorGroup(
   const archEntries: GeoEntry[] = []
   const doors: InteriorDoor[] = []
   const tryDoorway = (
-    northWall: boolean,
+    wall: DungeonWall,
     lat0: number,
     len: number,
     wallLine: number
   ) => {
-    if (
-      doorHash(layout.depth, northWall ? 0 : 1, lat0, wallLine) * 100 >=
-      INTERIOR_DOOR_PCT
-    )
+    if (doorHash(layout.depth, wall, lat0, wallLine) * 100 >= INTERIOR_DOOR_PCT)
       return
     doors.push(
       buildInteriorDoor(
         layout.depth,
-        northWall,
+        wall,
         lat0,
         len,
         wallLine,
@@ -1292,38 +1325,34 @@ export function buildDungeonFloorGroup(
       )
     )
   }
+  // Scan one of a room's four walls cell-by-cell for maximal runs whose outward
+  // neighbour is a corridor (a corridor mouth / doorway gap) and try a door at
+  // each. `lat` runs along the wall; the perpendicular wall line and the corridor
+  // neighbour both follow from the wall's spansX/outerLow descriptor.
+  const scanWall = (room: DungeonRoom, wall: DungeonWall) => {
+    const { spansX, outerLow } = DOOR_WALL_INFO[wall]
+    const latLo = spansX ? room.x : room.z
+    const latHi = latLo + (spansX ? room.w : room.d)
+    const wallLine =
+      (spansX ? room.z : room.x) + (outerLow ? 0 : spansX ? room.d : room.w)
+    const fixed = outerLow ? wallLine : wallLine - 1 // interior cell on the wall
+    const step = outerLow ? -1 : 1 // toward the corridor neighbour
+    let start = -1
+    for (let lat = latLo; lat <= latHi; lat++) {
+      const cx = spansX ? lat : fixed
+      const cz = spansX ? fixed : lat
+      const nx = spansX ? cx : cx + step
+      const nz = spansX ? cz + step : cz
+      const open = lat < latHi && carvedAt(cx, cz) && isCorridor(nx, nz)
+      if (open && start < 0) start = lat
+      if (!open && start >= 0) {
+        tryDoorway(wall, start, lat - start, wallLine)
+        start = -1
+      }
+    }
+  }
   for (const room of layout.rooms) {
-    // North wall (z = room.z): scan its row for maximal runs of cells whose
-    // north neighbour is a corridor — the corridor mouth, i.e. a doorway gap.
-    {
-      const zr = room.z
-      let start = -1
-      for (let x = room.x; x <= room.x + room.w; x++) {
-        const open =
-          x < room.x + room.w && carvedAt(x, zr) && isCorridor(x, zr - 1)
-        if (open && start < 0) start = x
-        if (!open && start >= 0) {
-          tryDoorway(true, start, x - start, zr)
-          start = -1
-        }
-      }
-    }
-    // East wall (cells x = room.x + room.w − 1; wall line one cell further):
-    // scan its column for runs whose east neighbour is a corridor.
-    {
-      const xr = room.x + room.w - 1
-      const wallLine = room.x + room.w
-      let start = -1
-      for (let z = room.z; z <= room.z + room.d; z++) {
-        const open =
-          z < room.z + room.d && carvedAt(xr, z) && isCorridor(xr + 1, z)
-        if (open && start < 0) start = z
-        if (!open && start >= 0) {
-          tryDoorway(false, start, z - start, wallLine)
-          start = -1
-        }
-      }
-    }
+    for (const wall of WALL_SIDES) scanWall(room, wall)
   }
   // Arches merge into the floor group but stay non-pickable, so a ground click
   // near a doorway falls through to the floor. The door leaves are NOT added

@@ -77,13 +77,14 @@ export const ENTRANCE_DOOR_ID = 0
 /** Opaque, stable door id for an interior room door, derived from its geometry
  *  (wall side + opening start cell + wall line). Both the renderer and the
  *  toggle packet use this, and the grid is < 256 cells so the parts pack into a
- *  u32 without overlap. North/east only (the only walls that get doors). */
+ *  u32 without overlap. `wall` is 0/1/2/3 for the room's N/E/S/W wall, packed
+ *  into the high bits so all four walls' doors get distinct ids. */
 export function encodeInteriorDoorId(
-  northWall: boolean,
+  wall: number,
   lat0: number,
   wallLine: number
 ): number {
-  return (northWall ? 0 : 0x10000) + lat0 * 0x100 + wallLine
+  return wall * 0x10000 + lat0 * 0x100 + wallLine
 }
 
 /** One interior door's blocking segment in world XZ (a shut door blocks it). */
