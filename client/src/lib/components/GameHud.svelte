@@ -54,9 +54,6 @@
 </script>
 
 <div class="game-hud">
-  {#if !$mapEditorMode}
-    <ChatPanel />
-  {/if}
   <FPSCounter />
   <GameTimeWidget />
   <DragGhost />
@@ -88,10 +85,17 @@
     <TradeWindow />
     <TradeOfferToast />
     <NpcContextMenu />
-    <QuickslotBar characterId={selectedCharacter.id} />
   {/if}
 
-  <div class="corner-actions">
+  <div class="bottom-hud">
+    {#if !$mapEditorMode}
+      <ChatPanel />
+    {/if}
+    <div class="action-cluster">
+      {#if selectedCharacter && !$mapEditorMode}
+        <QuickslotBar characterId={selectedCharacter.id} />
+      {/if}
+      <div class="corner-actions">
     {#if canReopenRespawnDialog}
       <button class="respawn-reopen" onclick={onReopenRespawnDialog}>
         Revive
@@ -112,6 +116,8 @@
     <button class="corner-btn" onclick={onOpenSettings} title="Settings">
       <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><path fill="currentColor" d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4l-55.7 17.7c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4c-1.1-8.4-1.7-16.9-1.7-25.5s.6-17.1 1.7-25.4l-43.3-39.4c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160a80 80 0 1 0 0 160z"/></svg>
     </button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -133,14 +139,11 @@
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    /* Corner menu-button dimensions, defined here (not on .corner-actions) so
-       the sibling quickslot bar can position itself beside the menu block from
-       the same source of truth. --menu-block-* are the rendered block widths:
-       3 buttons wide when the row wraps (two-row block), 5 wide when it doesn't. */
+    /* Corner menu-button dimensions. --menu-block-2row caps the menu's width so
+       its five buttons wrap to a 3+2 block on narrow screens. */
     --corner-btn-size: 36px;
     --corner-gap: 8px;
     --menu-block-2row: calc(3 * var(--corner-btn-size) + 2 * var(--corner-gap));
-    --menu-block-1row: calc(5 * var(--corner-btn-size) + 4 * var(--corner-gap));
   }
 
   /* Allow pointer events on interactive HUD children */
@@ -148,15 +151,39 @@
     pointer-events: auto;
   }
 
-  .corner-actions {
-    position: absolute;
+  /* Single bottom strip holding chat (left), quickslots + menu (right). The
+     wrapper and the action cluster are layout-only, so they stay click-through
+     (the gaps between panels must pass clicks down to the 3D scene) while their
+     real children re-enable pointer events via the :global(*) rule above. */
+  .bottom-hud {
+    position: fixed;
+    left: 9px;
     right: 9px;
     bottom: 9px;
     z-index: 30;
     display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    pointer-events: none;
+  }
+
+  .action-cluster {
+    /* Hug the right edge regardless of whether the chat panel is present. */
+    margin-left: auto;
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    pointer-events: none;
+    /* Rigid: the chat panel (flex-shrink:1) absorbs all width changes, so the
+       quickslot bar is never squeezed into extra rows when the viewport narrows. */
+    flex-shrink: 0;
+  }
+
+  .corner-actions {
+    display: flex;
     /* Right-aligned wrapping row capped at the two-row block width, so the 5
-       menu buttons wrap to 3+2 and the block stays narrow enough to clear the
-       centred quickslot bar. Collapses to a single row at >=1000px below. */
+       menu buttons wrap to a 3+2 block on narrow screens. Collapses to a single
+       row at >=1000px below. */
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -203,8 +230,8 @@
     color: #fff;
   }
 
-  /* Wide enough (>=1000px) to clear the centred quickslot bar (~444px), so
-     collapse the wrapping row into a single row. */
+  /* Below 1000px the menu wraps to a narrow two-row (3+2) block; at >=1000px
+     there is room for the single five-button row. */
   @media (min-width: 1000px) {
     .corner-actions {
       flex-wrap: nowrap;
@@ -212,18 +239,22 @@
     }
   }
 
+  /* Phone / narrow: keep everything on one row (chat shrinks, it does not wrap
+     above the cluster) and respect the safe-area insets. */
+  @media (max-width: 600px), (pointer: coarse) and (max-width: 900px) {
+    .bottom-hud {
+      left: max(9px, env(safe-area-inset-left));
+      right: max(9px, env(safe-area-inset-right));
+      bottom: max(9px, env(safe-area-inset-bottom));
+    }
+  }
+
   @media (max-width: 768px), (max-height: 520px) and (pointer: coarse) {
     /* Smaller buttons and gap on touch/narrow screens; still 3 per row. Set on
-       .game-hud (not .corner-actions) so the quickslot bar reads the same
-       values when it positions itself beside the menu block. */
+       .game-hud so both the menu and the quickslot bar read the same values. */
     .game-hud {
       --corner-btn-size: 32px;
       --corner-gap: 5px;
-    }
-
-    .corner-actions {
-      right: max(9px, env(safe-area-inset-right));
-      bottom: max(9px, env(safe-area-inset-bottom));
     }
 
     .respawn-reopen {
@@ -245,7 +276,7 @@
   }
 
   @media (orientation: landscape) and (pointer: coarse) and (max-height: 600px) {
-    .corner-actions {
+    .bottom-hud {
       bottom: 2px;
     }
   }

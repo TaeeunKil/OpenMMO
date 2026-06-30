@@ -194,10 +194,11 @@
 
 <style>
   .chat-panel {
-    position: fixed;
-    bottom: 9px;
-    left: 9px;
-    width: 350px;
+    /* Laid out by .bottom-hud (a flex row): take up to 450px on the left but
+       shrink toward the action cluster when the viewport is narrow. */
+    flex: 0 1 auto;
+    min-width: 0;
+    width: 450px;
     height: 300px;
     background: rgba(0, 0, 0, 0.8);
     border: 1px solid #4a5568;
@@ -381,71 +382,19 @@
     border-radius: 3px;
   }
 
-  /* Narrow: the quickslot bar wraps to two rows and is half as wide (~226px),
-     so the chat stays at the bottom-left (base position) instead of being lifted
-     above the bar. Cap the width so its right edge clears the centred bar.
-     (These constants mirror the bar/menu dimensions owned by QuickslotBar and
-     GameHud; if those change, re-derive the caps here.) */
-  @media (max-width: 1200px) {
-    .chat-panel {
-      width: min(350px, calc(50vw - 130px));
-    }
-  }
-
-  /* Desktop-narrow: the quickslot bar is tucked to the right against the menu
-     buttons, so the chat fills the left side. Cap clears the bar's left edge:
-     387 = menu(124) + 9 screen-margin + 16 gap + bar(217) + 12 gap + 9 left. */
-  @media (min-width: 601px) and (max-width: 999.98px) and (pointer: fine) {
-    .chat-panel {
-      width: min(450px, calc(100vw - 387px));
-    }
-  }
-
-  /* 1000–1200px: the bar is a right-aligned single row (~444px) reaching further
-     left, so the chat gets less room: 702 = menu(212) + 9 + 16 + bar(444) + 12 + 9. */
-  @media (min-width: 1000px) and (max-width: 1200px) {
-    .chat-panel {
-      width: min(450px, calc(100vw - 702px));
-    }
-  }
-
+  /* Phone / narrow: chat stays on the bottom row beside the action cluster and
+     just gets narrower (flex-shrink absorbs the squeeze); shrink its height and
+     round corners too. */
   @media (max-width: 600px), (pointer: coarse) and (max-width: 900px) {
     .chat-panel {
-      left: max(9px, env(safe-area-inset-left));
-      bottom: max(9px, env(safe-area-inset-bottom));
-      /* Clear the centred two-row quickslot bar (gets quite narrow on phones). */
-      width: min(300px, calc(50vw - 120px));
       height: min(124px, 22dvh);
       box-sizing: border-box;
       border-radius: 6px;
     }
 
-    .tabs {
-      position: absolute;
-      top: 0;
-      left: calc(100% + 4px);
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      border-bottom: none;
-    }
-
     .tab {
-      flex: none;
-      width: 46px;
-      height: 24px;
-      padding: 0;
-      border: 1px solid #4a5568;
-      border-radius: 5px;
-      background: rgba(26, 32, 44, 0.88);
-      font-size: 9px;
-      line-height: 1;
-    }
-
-    .tab.active {
-      background: rgba(66, 153, 225, 0.26);
-      border-color: rgba(66, 153, 225, 0.7);
-      border-bottom: 1px solid rgba(66, 153, 225, 0.7);
+      padding: 4px 0;
+      font-size: 10px;
     }
 
     .chat-messages {
@@ -482,9 +431,4 @@
     }
   }
 
-  @media (orientation: landscape) and (pointer: coarse) and (max-height: 600px) {
-    .chat-panel {
-      bottom: 2px;
-    }
-  }
 </style>

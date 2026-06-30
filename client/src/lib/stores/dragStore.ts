@@ -32,6 +32,36 @@ export function inflateRect(r: DOMRect, m: number): DOMRect {
   return new DOMRect(r.x - m, r.y - m, r.width + 2 * m, r.height + 2 * m)
 }
 
+/**
+ * The quickslot index under the pointer, or -1. Treats the whole bar (incl.
+ * gaps, with a little slack) as one drop zone and snaps to the nearest slot by
+ * 2D distance — so a multi-row bar targets the right row, not just the right
+ * column. Shared by the drag highlight and the drop handler so they agree.
+ */
+export function quickslotAt(x: number, y: number): number {
+  const els = [...document.querySelectorAll<HTMLElement>('[data-quickslot]')]
+  const bar = els[0]?.parentElement
+  if (
+    !bar ||
+    !pointInRect(x, y, inflateRect(bar.getBoundingClientRect(), 12))
+  ) {
+    return -1
+  }
+  let best = -1
+  let bestDist = Infinity
+  for (const el of els) {
+    const r = el.getBoundingClientRect()
+    const dx = (r.left + r.right) / 2 - x
+    const dy = (r.top + r.bottom) / 2 - y
+    const dist = dx * dx + dy * dy
+    if (dist < bestDist) {
+      bestDist = dist
+      best = Number(el.dataset.quickslot)
+    }
+  }
+  return best
+}
+
 export function isOverAnyDialog(x: number, y: number): boolean {
   for (const dialog of document.querySelectorAll('[role="dialog"]')) {
     if (pointInRect(x, y, dialog.getBoundingClientRect())) return true

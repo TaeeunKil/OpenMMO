@@ -8,7 +8,7 @@
     loadQuickslots,
     clearQuickslot,
   } from '../stores/quickslotStore'
-  import { dragMeta } from '../stores/dragStore'
+  import { dragMeta, dragPos, quickslotAt } from '../stores/dragStore'
   import { itemTooltip } from '../actions/itemTooltip'
 
   interface Props {
@@ -38,6 +38,12 @@
       if (!def) return null
       return { defId, def, qty: bagQuantity(defId) }
     })
+  )
+
+  // While a bag item is dragged, the slot it would drop into (-1 otherwise).
+  // Uses the same snap logic as the drop handler so highlight and drop agree.
+  const dropIndex = $derived(
+    $dragMeta?.source.type === 'bag' ? quickslotAt($dragPos.x, $dragPos.y) : -1
   )
 
   /** Use the item bound to a quickslot: equip if equippable, else consume. */
@@ -75,17 +81,13 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div
-  class="quickslot-bar"
-  class:drop-target={$dragMeta?.source.type === 'bag'}
-  role="toolbar"
-  aria-label="Quickslots"
->
+<div class="quickslot-bar" role="toolbar" aria-label="Quickslots">
   {#each slots as entry, i (i)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="quickslot"
       class:empty={!entry}
+      class:drop-target={i === dropIndex}
       data-quickslot={i}
       use:itemTooltip={entry ? { def: entry.def, side: 'right' } : null}
       ondblclick={() => useSlot(i)}
@@ -113,31 +115,19 @@
 
 <style>
   .quickslot-bar {
-    /* Cap at 40px (~70% of the original 56px), but shrink to fit so 10 slots
-       never overflow. Overhead = 9 gaps (6px) + 2 paddings (8px) + 32px margin. */
-    --quickslot-size: min(40px, (100vw - 102px) / 10);
+    /* Wide-screen single-row slot size (~70% of the original 56px). The
+       wrap/phone media queries below shrink it for narrow viewports. */
+    --quickslot-size: 40px;
     --quickslot-gap: 4px;
-    position: fixed;
-    left: 50%;
-    bottom: 4px;
-    transform: translateX(-50%);
-    z-index: 35;
     display: flex;
     flex-direction: row;
     gap: var(--quickslot-gap);
-    padding: 4px;
-    /* No container box — only the slots show. Border stays transparent so it
-       can turn green while a bag item is dragged over the bar (.drop-target). */
-    border: 1px solid transparent;
+    /* No padding or border: the bar's box is exactly the slots, so its bottom
+       edge lines up with the chat panel and menu buttons. */
     border-radius: 10px;
     font-family: 'Courier New', monospace;
     pointer-events: auto;
     max-width: calc(100vw - 32px);
-  }
-
-  .quickslot-bar.drop-target {
-    border-color: rgba(88, 255, 88, 0.5);
-    box-shadow: inset 0 0 12px rgba(88, 255, 88, 0.15);
   }
 
   .quickslot {
@@ -154,6 +144,15 @@
     backdrop-filter: blur(4px);
   }
 
+  /* Highlight only the slot a dragged bag item would drop into. Outline keeps
+     the slot's box (and the bar's alignment) unchanged. */
+  .quickslot.drop-target {
+    border-color: rgba(88, 255, 88, 0.7);
+    outline: 2px solid rgba(88, 255, 88, 0.7);
+    outline-offset: 1px;
+    box-shadow: 0 0 10px rgba(88, 255, 88, 0.35);
+  }
+
   .key-label {
     position: absolute;
     top: 2px;
@@ -166,9 +165,14 @@
   }
 
   .item-icon {
+    /* Slightly inset and centred so edge-to-edge icons (sword, spear) stay
+       inside the slot's border instead of spilling over it. */
     position: absolute;
-    width: var(--quickslot-size);
-    height: var(--quickslot-size);
+    inset: 0;
+    margin: auto;
+    width: 90%;
+    height: 90%;
+    object-fit: contain;
     image-rendering: pixelated;
   }
 
@@ -190,9 +194,10 @@
     color: #e06c6c;
   }
 
-  /* Very narrow (<1000px): wrap the 10 slots into two rows of five. Halves the
-     bar's width so the bottom-corner panels (chat, menu buttons) have room to
-     sit at the bottom instead of being lifted above the bar. */
+  /* Very narrow (<1000px): wrap the 10 slots into exactly two rows of five.
+     The width is pinned to five slots wide and the action cluster is rigid
+     (flex-shrink:0 in GameHud), so the bar can never be squeezed into a third
+     or fourth row — the chat panel takes all the shrinking instead. */
   @media (max-width: 999.98px) {
     .quickslot-bar {
       flex-wrap: wrap;
@@ -205,31 +210,11 @@
     }
   }
 
-  /* Desktop-narrow: tuck the bar against the right-hand menu buttons instead of
-     centring it, freeing the whole left side for a wider chat panel. The menu
-     block is two rows below 1000px (where the bar is also two rows) and one row
-     above it, so it reads the matching --menu-block-* width plus a 9px screen
-     margin and a 16px gap. Widths come from .game-hud (the common ancestor). */
-  @media (min-width: 601px) and (max-width: 999.98px) and (pointer: fine) {
-    .quickslot-bar {
-      left: auto;
-      right: calc(var(--menu-block-2row, 124px) + 9px + 16px);
-      transform: none;
-    }
-  }
-
-  @media (min-width: 1000px) and (max-width: 1200px) {
-    .quickslot-bar {
-      left: auto;
-      right: calc(var(--menu-block-1row, 212px) + 9px + 16px);
-      transform: none;
-    }
-  }
-
+  /* Phone / narrow: keep the two-row layout but let each slot shrink so the
+     five-wide rows still fit (with the menu) without overflowing the screen. */
   @media (max-width: 600px), (pointer: coarse) {
     .quickslot-bar {
-      bottom: calc(2px + env(safe-area-inset-bottom));
-      padding: 6px;
+      --quickslot-size: min(40px, calc(20vw - 36px));
     }
   }
 </style>
