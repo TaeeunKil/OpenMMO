@@ -272,6 +272,19 @@
   .chat-panel.transcript-faded .tabs,
   .chat-panel.transcript-faded .chat-messages {
     opacity: 0;
+  }
+
+  /* When faded the transcript is see-through, so its clicks must fall through
+     to the 3D scene behind it. GameHud's `.game-hud *` rule force-enables
+     pointer events on every HUD descendant — including the individual tab
+     buttons and message rows — which re-captures those clicks even though the
+     containers above are set to none. Override it here (higher specificity) so
+     the whole transcript is genuinely click-through. The input bar stays
+     interactive via the .chat-input rule above so it can still be tapped. */
+  .chat-panel.transcript-faded .tabs,
+  .chat-panel.transcript-faded .tabs :global(*),
+  .chat-panel.transcript-faded .chat-messages,
+  .chat-panel.transcript-faded .chat-messages :global(*) {
     pointer-events: none;
   }
 
