@@ -318,7 +318,7 @@ impl super::GameState {
     }
 
     /// Use a consumable from the bag: resolve its effect and dispatch to the
-    /// matching handler (healing potion, teleport scroll, ...).
+    /// matching handler (healing potion, return scroll, ...).
     pub async fn use_item(&self, player_id: &PlayerId, instance_id: u64) {
         // Resolve which usable effect this item carries before mutating anything.
         let effect = {
@@ -353,7 +353,7 @@ impl super::GameState {
 
         match effect {
             UseEffect::Heal(dice) => self.use_healing_item(player_id, instance_id, &dice).await,
-            UseEffect::TeleportTown => self.use_teleport_scroll(player_id, instance_id).await,
+            UseEffect::TeleportTown => self.use_return_scroll(player_id, instance_id).await,
             UseEffect::EnchantWeapon => {
                 self.use_enchant_weapon_scroll(player_id, instance_id).await
             }
@@ -419,9 +419,9 @@ impl super::GameState {
         defeated
     }
 
-    /// Read a scroll of teleportation: whisk the reader back to the town spawn
+    /// Read a scroll of return: whisk the reader back to the town spawn
     /// (surface floor). Refuses while defeated so the dead can't escape death.
-    async fn use_teleport_scroll(&self, player_id: &PlayerId, instance_id: u64) {
+    async fn use_return_scroll(&self, player_id: &PlayerId, instance_id: u64) {
         if self
             .reject_if_defeated(player_id, "You can't read while defeated")
             .await

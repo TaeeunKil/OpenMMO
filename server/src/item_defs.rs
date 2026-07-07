@@ -64,7 +64,7 @@ impl ItemDefinition {
     pub fn use_effect(&self) -> Option<UseEffect> {
         match self.category.as_deref()? {
             "healing_potion" => self.dice.clone().map(UseEffect::Heal),
-            "teleport_scroll" => Some(UseEffect::TeleportTown),
+            "return_scroll" => Some(UseEffect::TeleportTown),
             "enchant_scroll" => Some(UseEffect::EnchantWeapon),
             _ => None,
         }

@@ -29,7 +29,7 @@ export function getItemDef(itemDefId: string): ItemDefinition | undefined {
 /** Categories that can be drunk/used from the bag. Extend as potions are added. */
 const CONSUMABLE_CATEGORIES = new Set([
   'healing_potion',
-  'teleport_scroll',
+  'return_scroll',
   'enchant_scroll',
 ])
 
