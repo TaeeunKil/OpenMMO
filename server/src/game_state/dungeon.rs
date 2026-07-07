@@ -385,6 +385,7 @@ impl GameState {
                 item_def_id: super::COIN_PILE_ITEM_ID.to_string(),
                 position,
                 floor_level,
+                enchant: 0,
             },
             None,
         )

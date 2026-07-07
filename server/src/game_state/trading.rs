@@ -530,6 +530,7 @@ impl super::GameState {
                 instance_id,
                 item_def_id: item_def_id.to_string(),
                 quantity: 1,
+                enchant: 0,
             });
             let snapshot = inv.clone();
 
@@ -681,10 +682,12 @@ impl super::GameState {
             }
 
             let mut inventories = self.inventories.write().await;
-            let Some(idx) = inventories
-                .get_mut(player_id)
-                .and_then(|inv| inv.bag.iter().position(|i| i.instance_id == instance_id))
-            else {
+            let Some((idx, sold_enchant)) = inventories.get_mut(player_id).and_then(|inv| {
+                inv.bag
+                    .iter()
+                    .position(|i| i.instance_id == instance_id)
+                    .map(|idx| (idx, inv.bag[idx].enchant))
+            }) else {
                 drop(inventories);
                 drop(gold_map);
                 return self
@@ -730,10 +733,13 @@ impl super::GameState {
                         )
                         .await;
                 }
+                // Keep the sold unit's enchantment: a +3 sword stays +3 in
+                // the resident's bag.
                 npc_inv.bag.push(ItemInstance {
                     instance_id: npc_instance_id,
                     item_def_id: item_def_id.clone(),
                     quantity: 1,
+                    enchant: sold_enchant,
                 });
                 Some(npc_inv.clone())
             } else {

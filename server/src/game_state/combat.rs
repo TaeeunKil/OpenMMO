@@ -82,15 +82,20 @@ impl super::GameState {
             }
             info!("Player {} attacking monster {}", player_name, monster_id);
 
-            // Unarmed falls back to D&D 5e improvised 1d2.
-            let weapon_dice: String = {
+            // Unarmed falls back to D&D 5e improvised 1d2. An enchanted
+            // weapon (+N) adds its enchant to attack and damage rolls.
+            let (weapon_dice, weapon_enchant): (String, i32) = {
                 let inventories = self.inventories.read().await;
                 inventories
                     .get(player_id)
                     .and_then(|inv| inv.equipped.get(&EquipSlot::MainHand))
-                    .and_then(|item| self.item_defs.get(&item.item_def_id))
-                    .and_then(|def| def.damage_dice().map(str::to_string))
-                    .unwrap_or_else(|| "1d2".to_string())
+                    .and_then(|item| {
+                        self.item_defs
+                            .get(&item.item_def_id)
+                            .and_then(|def| def.damage_dice())
+                            .map(|dice| (dice.to_string(), item.enchant))
+                    })
+                    .unwrap_or_else(|| ("1d2".to_string(), 0))
             };
 
             let str_mod = {
@@ -104,8 +109,14 @@ impl super::GameState {
             let (result_hit, result_roll, result_damage) = {
                 let def = self.monster_defs.get(&monster_type);
                 let target_guard = def.map(|d| i32::from(d.guard)).unwrap_or(10);
-                let attack_bonus = combat::level_attack_bonus(player_level) + str_mod;
-                let result = combat::roll_attack(attack_bonus, target_guard, &weapon_dice, str_mod);
+                let attack_bonus =
+                    combat::level_attack_bonus(player_level) + str_mod + weapon_enchant;
+                let result = combat::roll_attack(
+                    attack_bonus,
+                    target_guard,
+                    &weapon_dice,
+                    str_mod + weapon_enchant,
+                );
                 (result.hit, result.roll, result.damage)
             };
 
@@ -206,6 +217,7 @@ impl super::GameState {
                                 item_def_id,
                                 position: drop_position,
                                 floor_level: monster_floor_level,
+                                enchant: 0,
                             },
                             Some(monster_id.clone()),
                         )

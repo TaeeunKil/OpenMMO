@@ -3,9 +3,13 @@ import { get } from 'svelte/store'
 import ItemTooltip from '../components/ItemTooltip.svelte'
 import { dragMeta } from '../stores/dragStore'
 import type { ItemDefinition } from '../data/itemDefs'
+import type { ItemInstance } from '../network/networkTypes'
 
 export interface ItemTooltipParams {
   def: ItemDefinition
+  /** The hovered instance, when one exists — supplies per-instance display
+   * data such as the +N enchant. Omit for def-only surfaces (shop catalog). */
+  item?: ItemInstance
   side?: 'left' | 'right'
 }
 
@@ -31,6 +35,7 @@ export function itemTooltip(
       target: document.body,
       props: {
         def: params.def,
+        enchant: params.item?.enchant,
         side: params.side,
         anchor: node.getBoundingClientRect(),
       },

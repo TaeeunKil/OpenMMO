@@ -54,7 +54,7 @@
   - [x] A* 길찾기
 - [x] npc 출퇴근
 - [x] npc 상점
-- 아이템 enchant 시스템
+- [x] 아이템 enchant 시스템 (무기 +N, Scroll of Enchant Weapon)
 - 장비한 갑옷에 따른 외형 변화
 - [x] chatting tab for combat log
 - [x] change name of scp939

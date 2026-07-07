@@ -83,6 +83,10 @@ pub struct ItemInstance {
     pub instance_id: u64,
     pub item_def_id: String,
     pub quantity: u32,
+    /// Weapon enchantment level (+N to attack and damage rolls). Zero for
+    /// everything but enchanted weapons; `default` keeps old payloads valid.
+    #[serde(default)]
+    pub enchant: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +110,10 @@ pub struct GroundItem {
     pub item_def_id: String,
     pub position: Position,
     pub floor_level: i8,
+    /// Carries a dropped weapon's enchantment so picking it back up
+    /// doesn't wipe it.
+    #[serde(default)]
+    pub enchant: i32,
 }
 
 #[cfg(test)]

@@ -200,6 +200,7 @@ mod tests {
                 instance_id: i as u64 + 1,
                 item_def_id: (*id).to_string(),
                 quantity: 1,
+                enchant: 0,
             })
             .collect()
     }

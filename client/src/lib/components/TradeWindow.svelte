@@ -381,7 +381,7 @@
               class="item-row"
               disabled={reserved >= item.quantity}
               onclick={() => addSell(item, def)}
-              use:itemTooltip={{ def, side: 'right' }}
+              use:itemTooltip={{ def, item, side: 'right' }}
             >
               <img class="item-icon" src="/items/{def.icon}" alt="" draggable="false" />
               <span class="item-name">

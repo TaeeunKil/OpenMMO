@@ -13,6 +13,16 @@ use std::path::PathBuf;
 /// refuse to buy. (item_def_id, quantity, equip_slot)
 const STARTER_ITEMS: &[(&str, u32, Option<&str>)] = &[("worn_iron_sword", 1, Some("main_hand"))];
 
+/// One persisted inventory row: a bag stack (`equip_slot: None`) or an
+/// equipped item.
+#[derive(Debug, Clone)]
+pub struct ItemRow {
+    pub item_def_id: String,
+    pub quantity: u32,
+    pub equip_slot: Option<String>,
+    pub enchant: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthService {
     pool: r2d2::Pool<SqliteConnectionManager>,
@@ -224,10 +234,34 @@ impl AuthService {
                 item_def_id TEXT NOT NULL,
                 quantity INTEGER NOT NULL DEFAULT 1,
                 equip_slot TEXT,
+                enchant INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
             )",
             [],
         )?;
+        Self::ensure_character_item_columns(conn)?;
+
+        Ok(())
+    }
+
+    /// Column names currently on `table`, for post-release ALTER migrations.
+    fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>, rusqlite::Error> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<HashSet<_>, _>>()?;
+        Ok(columns)
+    }
+
+    /// Columns added to character_items after release; mirrors
+    /// `ensure_character_attribute_columns` for the characters table.
+    fn ensure_character_item_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+        if !Self::table_columns(conn, "character_items")?.contains("enchant") {
+            conn.execute(
+                "ALTER TABLE character_items ADD COLUMN enchant INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
 
         Ok(())
     }
@@ -249,10 +283,7 @@ impl AuthService {
     }
 
     fn ensure_character_attribute_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
-        let mut stmt = conn.prepare("PRAGMA table_info(characters)")?;
-        let existing_columns: HashSet<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<HashSet<_>, _>>()?;
+        let existing_columns = Self::table_columns(conn, "characters")?;
 
         let spawn = &world_config().spawn_position;
         let expected_columns: Vec<(&str, String)> = vec![
@@ -656,33 +687,27 @@ impl AuthService {
         Ok(())
     }
 
-    /// Load all items for a character: (item_def_id, quantity, equip_slot or None).
-    pub fn load_inventory(
-        &self,
-        character_id: i64,
-    ) -> Result<Vec<(String, u32, Option<String>)>, AuthError> {
+    /// Load all items for a character.
+    pub fn load_inventory(&self, character_id: i64) -> Result<Vec<ItemRow>, AuthError> {
         let conn = self.open_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT item_def_id, quantity, equip_slot FROM character_items WHERE character_id = ?1",
+            "SELECT item_def_id, quantity, equip_slot, enchant FROM character_items WHERE character_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![character_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, u32>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
+                Ok(ItemRow {
+                    item_def_id: row.get(0)?,
+                    quantity: row.get(1)?,
+                    equip_slot: row.get(2)?,
+                    enchant: row.get(3)?,
+                })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
     /// Save all items for a character, replacing existing data.
-    pub fn save_inventory(
-        &self,
-        character_id: i64,
-        items: &[(String, u32, Option<String>)],
-    ) -> Result<(), AuthError> {
+    pub fn save_inventory(&self, character_id: i64, items: &[ItemRow]) -> Result<(), AuthError> {
         let conn = self.open_connection()?;
         let tx = conn.unchecked_transaction()?;
 
@@ -693,11 +718,17 @@ impl AuthService {
 
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO character_items (character_id, item_def_id, quantity, equip_slot) \
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO character_items (character_id, item_def_id, quantity, equip_slot, enchant) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
-            for (item_def_id, quantity, equip_slot) in items {
-                stmt.execute(params![character_id, item_def_id, quantity, equip_slot])?;
+            for item in items {
+                stmt.execute(params![
+                    character_id,
+                    item.item_def_id,
+                    item.quantity,
+                    item.equip_slot,
+                    item.enchant
+                ])?;
             }
         }
 

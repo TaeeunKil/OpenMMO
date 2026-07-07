@@ -3,13 +3,15 @@
 
   interface Props {
     def: ItemDefinition
+    /** Weapon enchantment level; prefixes the name (e.g. "+2 Iron Sword"). */
+    enchant?: number
     side?: 'left' | 'right'
     anchor: DOMRect
   }
 
   // Mounted at document.body by the itemTooltip action; positions itself
   // next to the anchor rect, clamped to the viewport vertically.
-  let { def, side = 'right', anchor }: Props = $props()
+  let { def, enchant = 0, side = 'right', anchor }: Props = $props()
 
   let height = $state(0)
 
@@ -22,7 +24,7 @@
 </script>
 
 <div class="tooltip" style="top: {top}px; {horizontal}" bind:clientHeight={height}>
-  <div class="tooltip-name">{def.name}</div>
+  <div class="tooltip-name">{enchant > 0 ? `+${enchant} ` : ''}{def.name}</div>
   <div class="tooltip-desc">{def.description}</div>
   <div class="tooltip-stats">
     <span>Weight: {def.weight}</span>
@@ -30,7 +32,7 @@
       <span>Slot: {def.equipSlot.replace(/_/g, ' ')}</span>
     {/if}
     {#if def.category === 'weapon' && def.dice}
-      <span>Damage: {def.dice}</span>
+      <span>Damage: {def.dice}{enchant > 0 ? `+${enchant}` : ''}</span>
     {:else if def.category === 'healing_potion' && def.dice}
       <span>Heals: {def.dice}</span>
     {/if}

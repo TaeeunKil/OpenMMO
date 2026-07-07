@@ -1,4 +1,5 @@
-use crate::auth::AuthService;
+use crate::auth::{AuthService, ItemRow};
+use crate::item_defs::UseEffect;
 use crate::types::{PlayerId, ServerMessage};
 use crate::world_config::world_config;
 use onlinerpg_shared::inventory::{EquipSlot, GroundItem, ItemInstance, PlayerInventory};
@@ -12,23 +13,50 @@ const GROUND_ITEM_LIFETIME_MS: u64 = 5 * 60 * 1000;
 
 const MAX_PICKUP_DISTANCE: f32 = 2.5;
 
-/// The effect produced by reading/drinking a usable item via `use_item`.
-enum UseEffect {
-    /// Restore HP by rolling the given dice notation.
-    Heal(String),
-    /// Teleport the user back to the town spawn point.
-    TeleportTown,
+/// Enchanting a weapon below this level always succeeds; at or beyond it,
+/// each further scroll risks destroying the weapon outright (NetHack's
+/// over-enchanting gamble).
+const ENCHANT_SAFE_LIMIT: i32 = 5;
+
+/// Chance (percent) that enchanting a weapon currently at `enchant` destroys
+/// it: +4 and below are safe, then the risk climbs 25 points per level —
+/// +5 → 25%, +6 → 50%, +7 → 75%, +8 and beyond → certain destruction.
+fn enchant_destruction_percent(enchant: i32) -> i32 {
+    ((enchant - ENCHANT_SAFE_LIMIT + 1) * 25).clamp(0, 100)
 }
 
-/// Serialize a PlayerInventory into the flat row format used by AuthService persistence.
-fn serialize_inventory(inv: &PlayerInventory) -> Vec<(String, u32, Option<String>)> {
-    let mut rows: Vec<(String, u32, Option<String>)> = inv
+/// Remove one unit of `instance_id` from the bag, dropping the instance when
+/// the stack empties.
+fn consume_one(inv: &mut PlayerInventory, instance_id: u64) {
+    if let Some(idx) = inv.bag.iter().position(|i| i.instance_id == instance_id) {
+        if inv.bag[idx].quantity > 1 {
+            inv.bag[idx].quantity -= 1;
+        } else {
+            inv.bag.remove(idx);
+        }
+    }
+}
+
+/// Serialize a PlayerInventory into the flat row format used by AuthService
+/// persistence.
+fn serialize_inventory(inv: &PlayerInventory) -> Vec<ItemRow> {
+    let mut rows: Vec<ItemRow> = inv
         .bag
         .iter()
-        .map(|item| (item.item_def_id.clone(), item.quantity, None))
+        .map(|item| ItemRow {
+            item_def_id: item.item_def_id.clone(),
+            quantity: item.quantity,
+            equip_slot: None,
+            enchant: item.enchant,
+        })
         .collect();
     for (slot, item) in &inv.equipped {
-        rows.push((item.item_def_id.clone(), 1, Some(slot.as_str().to_string())));
+        rows.push(ItemRow {
+            item_def_id: item.item_def_id.clone(),
+            quantity: 1,
+            equip_slot: Some(slot.as_str().to_string()),
+            enchant: item.enchant,
+        });
     }
     rows
 }
@@ -119,19 +147,20 @@ impl super::GameState {
             let start_id = self.reserve_instance_ids(rows.len() as u64).await;
             let mut next_id = start_id;
 
-            for (item_def_id, quantity, equip_slot) in rows {
+            for row in rows {
                 let instance_id = next_id;
                 next_id += 1;
 
-                match equip_slot {
+                match row.equip_slot {
                     Some(slot_str) => {
                         if let Ok(slot) = slot_str.parse::<EquipSlot>() {
                             inventory.equipped.insert(
                                 slot,
                                 ItemInstance {
                                     instance_id,
-                                    item_def_id,
+                                    item_def_id: row.item_def_id,
                                     quantity: 1,
+                                    enchant: row.enchant,
                                 },
                             );
                         } else {
@@ -144,8 +173,9 @@ impl super::GameState {
                     None => {
                         inventory.bag.push(ItemInstance {
                             instance_id,
-                            item_def_id,
-                            quantity,
+                            item_def_id: row.item_def_id,
+                            quantity: row.quantity,
+                            enchant: row.enchant,
                         });
                     }
                 }
@@ -192,6 +222,7 @@ impl super::GameState {
                 instance_id,
                 item_def_id: item_def_id.to_string(),
                 quantity: 1,
+                enchant: 0,
             });
             inv.clone()
         };
@@ -295,11 +326,10 @@ impl super::GameState {
                     return;
                 }
             };
-            let effect = self.item_defs.get(&item.item_def_id).and_then(|def| {
-                def.heal_dice()
-                    .map(|dice| UseEffect::Heal(dice.to_string()))
-                    .or_else(|| def.is_teleport_scroll().then_some(UseEffect::TeleportTown))
-            });
+            let effect = self
+                .item_defs
+                .get(&item.item_def_id)
+                .and_then(|def| def.use_effect());
             match effect {
                 Some(effect) => effect,
                 None => {
@@ -314,6 +344,9 @@ impl super::GameState {
         match effect {
             UseEffect::Heal(dice) => self.use_healing_item(player_id, instance_id, &dice).await,
             UseEffect::TeleportTown => self.use_teleport_scroll(player_id, instance_id).await,
+            UseEffect::EnchantWeapon => {
+                self.use_enchant_weapon_scroll(player_id, instance_id).await
+            }
         }
     }
 
@@ -363,16 +396,26 @@ impl super::GameState {
         .await;
     }
 
+    /// If the player is defeated (or gone), message them and return true so
+    /// the caller can bail. Shared guard for read-a-scroll style consumables.
+    async fn reject_if_defeated(&self, player_id: &PlayerId, message: &str) -> bool {
+        let defeated = match self.players.read().await.get(player_id) {
+            Some(player) => player.health == 0,
+            None => return true,
+        };
+        if defeated {
+            self.send_inventory_error(player_id, message).await;
+        }
+        defeated
+    }
+
     /// Read a scroll of teleportation: whisk the reader back to the town spawn
     /// (surface floor). Refuses while defeated so the dead can't escape death.
     async fn use_teleport_scroll(&self, player_id: &PlayerId, instance_id: u64) {
-        let defeated = match self.players.read().await.get(player_id) {
-            Some(player) => player.health == 0,
-            None => return,
-        };
-        if defeated {
-            self.send_inventory_error(player_id, "You can't read while defeated")
-                .await;
+        if self
+            .reject_if_defeated(player_id, "You can't read while defeated")
+            .await
+        {
             return;
         }
 
@@ -381,6 +424,78 @@ impl super::GameState {
         let spawn = &world_config().spawn_position;
         self.teleport_player(player_id, spawn.position(), spawn.rotation, 0)
             .await;
+    }
+
+    /// Read a scroll of enchant weapon: +1 to the wielded weapon's
+    /// enchantment, which is added to attack and damage rolls. NetHack-style
+    /// over-enchanting gamble: past +{ENCHANT_SAFE_LIMIT - 1} each further
+    /// reading risks destroying the weapon (see `enchant_destruction_percent`).
+    /// Refuses — keeping the scroll — while defeated or with nothing wielded.
+    async fn use_enchant_weapon_scroll(&self, player_id: &PlayerId, instance_id: u64) {
+        if self
+            .reject_if_defeated(player_id, "You can't read while defeated")
+            .await
+        {
+            return;
+        }
+
+        // Roll before taking the lock; unused when the weapon is still safe.
+        let destroy_roll = rand::thread_rng().gen_range(0..100);
+
+        let (snapshot, message) = {
+            let mut inventories = self.inventories.write().await;
+            let inv = match inventories.get_mut(player_id) {
+                Some(inv) => inv,
+                None => return,
+            };
+
+            // The scroll only bites on a wielded weapon; an empty (or
+            // non-weapon) main hand keeps it unread.
+            let wielding_weapon = inv.equipped.get(&EquipSlot::MainHand).is_some_and(|item| {
+                self.item_defs
+                    .get(&item.item_def_id)
+                    .is_some_and(|def| def.is_weapon())
+            });
+            if !wielding_weapon {
+                drop(inventories);
+                self.send_inventory_error(player_id, "You have no weapon wielded to enchant")
+                    .await;
+                return;
+            }
+
+            // The scroll is spent whether the enchant takes or the weapon breaks.
+            consume_one(inv, instance_id);
+
+            let weapon = inv
+                .equipped
+                .get_mut(&EquipSlot::MainHand)
+                .expect("checked above");
+            let name = self.item_name(&weapon.item_def_id);
+            let message = if destroy_roll < enchant_destruction_percent(weapon.enchant) {
+                inv.equipped.remove(&EquipSlot::MainHand);
+                format!("Your {name} glows brightly, shudders violently... and evaporates!")
+            } else {
+                weapon.enchant += 1;
+                format!(
+                    "Your {name} glows blue for a moment. It is now +{}.",
+                    weapon.enchant
+                )
+            };
+            (inv.clone(), message)
+        };
+
+        self.mark_inventory_dirty(player_id).await;
+        self.send_inventory_snapshot(player_id, snapshot).await;
+        // InventoryError doubles as the direct system-chat channel.
+        self.send_inventory_error(player_id, &message).await;
+    }
+
+    /// Display name for an item def, falling back to the raw id.
+    fn item_name(&self, item_def_id: &str) -> String {
+        self.item_defs
+            .get(item_def_id)
+            .map(|def| def.name.clone())
+            .unwrap_or_else(|| item_def_id.to_string())
     }
 
     /// Remove one unit of `instance_id` from the player's bag (dropping the
@@ -393,13 +508,7 @@ impl super::GameState {
                 Some(inv) => inv,
                 None => return,
             };
-            if let Some(idx) = inv.bag.iter().position(|i| i.instance_id == instance_id) {
-                if inv.bag[idx].quantity > 1 {
-                    inv.bag[idx].quantity -= 1;
-                } else {
-                    inv.bag.remove(idx);
-                }
-            }
+            consume_one(inv, instance_id);
             inv.clone()
         };
 
@@ -474,6 +583,7 @@ impl super::GameState {
                     item_def_id,
                     position,
                     floor_level,
+                    enchant: 0,
                 },
                 None,
             )
@@ -490,37 +600,38 @@ impl super::GameState {
             }
         };
 
-        let (snapshot, item_def_id) = {
+        let (snapshot, dropped) = {
             let mut inventories = self.inventories.write().await;
             let inv = match inventories.get_mut(player_id) {
                 Some(inv) => inv,
                 None => return,
             };
 
-            let def_id =
+            let dropped =
                 if let Some(idx) = inv.bag.iter().position(|i| i.instance_id == instance_id) {
-                    inv.bag.remove(idx).item_def_id
+                    inv.bag.remove(idx)
                 } else if let Some(slot) = inv
                     .equipped
                     .iter()
                     .find(|(_, item)| item.instance_id == instance_id)
                     .map(|(slot, _)| *slot)
                 {
-                    inv.equipped.remove(&slot).unwrap().item_def_id
+                    inv.equipped.remove(&slot).unwrap()
                 } else {
                     drop(inventories);
                     self.send_inventory_error(player_id, "Item not found").await;
                     return;
                 };
 
-            (inv.clone(), def_id)
+            (inv.clone(), dropped)
         };
 
         let ground_item = GroundItem {
             instance_id,
-            item_def_id,
+            item_def_id: dropped.item_def_id,
             position,
             floor_level,
+            enchant: dropped.enchant,
         };
 
         self.mark_inventory_dirty(player_id).await;
@@ -562,6 +673,7 @@ impl super::GameState {
                 item_def_id: item_def_id.to_string(),
                 position,
                 floor_level,
+                enchant: 0,
             },
             None,
         )
@@ -648,6 +760,7 @@ impl super::GameState {
                     instance_id,
                     item_def_id: ground_item.item_def_id,
                     quantity: 1,
+                    enchant: ground_item.enchant,
                 });
                 inv.clone()
             } else {
@@ -757,9 +870,7 @@ impl super::GameState {
         }
     }
 
-    pub async fn collect_dirty_inventory_states(
-        &self,
-    ) -> Vec<(i64, Vec<(String, u32, Option<String>)>)> {
+    pub async fn collect_dirty_inventory_states(&self) -> Vec<(i64, Vec<ItemRow>)> {
         let dirty_ids: Vec<PlayerId> = {
             let mut dirty = self.dirty_inventories.write().await;
             dirty.drain().collect()
@@ -787,7 +898,7 @@ impl super::GameState {
     pub async fn get_inventory_save_data(
         &self,
         player_id: &PlayerId,
-    ) -> Option<(i64, Vec<(String, u32, Option<String>)>)> {
+    ) -> Option<(i64, Vec<ItemRow>)> {
         let inventories = self.inventories.read().await;
         let player_chars = self.player_characters.read().await;
 

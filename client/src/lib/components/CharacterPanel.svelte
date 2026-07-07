@@ -191,12 +191,15 @@
           style="top:{top}%;left:{left}%"
           title={item ? undefined : EQUIP_SLOT_LABELS[slot]}
           data-equip-slot={slot}
-          use:itemTooltip={item && def ? { def, side: left > 50 ? 'left' : 'right' } : null}
+          use:itemTooltip={item && def ? { def, item, side: left > 50 ? 'left' : 'right' } : null}
           ondblclick={() => { if (item) unequip(slot) }}
           onpointerdown={(e: PointerEvent) => { if (item) onEquipPointerDown(e, slot, item) }}
         >
           {#if def}
             <img class="equip-icon" src="/items/{def.icon}" alt={def.name} draggable="false" />
+          {/if}
+          {#if item && item.enchant > 0}
+            <span class="item-enchant">+{item.enchant}</span>
           {/if}
         </div>
       {/each}
@@ -401,6 +404,17 @@
     width: var(--equip-icon-size);
     height: var(--equip-icon-size);
     image-rendering: pixelated;
+    pointer-events: none;
+  }
+
+  .item-enchant {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #7ec8ff;
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
     pointer-events: none;
   }
 

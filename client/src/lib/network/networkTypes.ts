@@ -191,6 +191,8 @@ export type ItemInstance = {
   instance_id: number
   item_def_id: string
   quantity: number
+  /** Weapon enchantment level (+N to attack and damage rolls). */
+  enchant: number
 }
 
 export type PlayerInventory = {
@@ -203,6 +205,8 @@ export type ServerGroundItem = {
   item_def_id: string
   position: Position
   floor_level: number
+  /** Carries a dropped weapon's enchantment across the drop/pickup cycle. */
+  enchant: number
 }
 
 export type AuthSuccessPayload = {

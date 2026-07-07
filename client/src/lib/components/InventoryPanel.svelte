@@ -119,12 +119,15 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="grid-cell"
-          use:itemTooltip={def ? { def, side: 'left' } : null}
+          use:itemTooltip={def && slot ? { def, item: slot, side: 'left' } : null}
           ondblclick={() => onDblClick(slot)}
           onpointerdown={(e: PointerEvent) => { if (slot) onPointerDown(e, slot) }}
         >
           {#if def}
             <img class="item-icon" src="/items/{def.icon}" alt="" draggable="false" />
+          {/if}
+          {#if slot && slot.enchant > 0}
+            <span class="item-enchant">+{slot.enchant}</span>
           {/if}
           {#if slot && slot.quantity > 1}
             <span class="item-qty">{slot.quantity}</span>
@@ -249,6 +252,16 @@
     font-size: 11px;
     font-weight: 700;
     color: #fff;
+    text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  }
+
+  .item-enchant {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #7ec8ff;
     text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
   }
 

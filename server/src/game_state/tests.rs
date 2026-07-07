@@ -4,7 +4,7 @@ use crate::item_defs::ItemDefs;
 use crate::monster_defs::MonsterDefs;
 use crate::types::{CharacterClass, Gender, MonsterState, Position, ServerMessage};
 use crate::world_config::world_config;
-use onlinerpg_shared::inventory::{GroundItem, ItemInstance};
+use onlinerpg_shared::inventory::{EquipSlot, GroundItem, ItemInstance};
 use onlinerpg_shared::messages::DealKind;
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc::error::TryRecvError as MpscTryRecvError;
@@ -273,6 +273,7 @@ async fn movement_into_aoi_sends_existing_monsters_and_ground_items() {
                     item_def_id: "test_item".to_string(),
                     position: entity_position,
                     floor_level: 0,
+                    enchant: 0,
                 },
                 dropped_at_ms: 0,
             },
@@ -647,6 +648,7 @@ async fn sell_item_applies_deal_bonus() {
             instance_id: 7,
             item_def_id: "iron_sword".to_string(),
             quantity: 1,
+            enchant: 0,
         });
         inventories.insert("buyer".to_string(), inv);
     }
@@ -686,6 +688,7 @@ fn bag_item(instance_id: u64, item_def_id: &str, quantity: u32) -> ItemInstance 
         instance_id,
         item_def_id: item_def_id.to_string(),
         quantity,
+        enchant: 0,
     }
 }
 
@@ -1029,4 +1032,96 @@ async fn salary_pays_once_per_day_rollover_up_to_cap() {
         game_state.get_player_gold(&"npc_karl".to_string()).await,
         30_000
     );
+}
+
+// --- Enchant weapon scrolls ---
+
+/// Spawn a live player wielding `weapon` at the given enchant level with one
+/// enchant scroll (instance 2) in the bag, and return their direct channel.
+async fn setup_enchant_reader(
+    game_state: &GameState,
+    weapon: Option<(&str, i32)>,
+) -> tokio::sync::mpsc::UnboundedReceiver<ServerMessage> {
+    game_state.add_player(make_player("reader", 0.0, 0.0)).await;
+    let rx = game_state
+        .register_direct_channel(&"reader".to_string())
+        .await;
+
+    let mut inv: onlinerpg_shared::inventory::PlayerInventory = Default::default();
+    if let Some((weapon_def_id, enchant)) = weapon {
+        inv.equipped.insert(
+            EquipSlot::MainHand,
+            ItemInstance {
+                instance_id: 1,
+                item_def_id: weapon_def_id.to_string(),
+                quantity: 1,
+                enchant,
+            },
+        );
+    }
+    inv.bag.push(bag_item(2, "scroll_of_enchant_weapon", 1));
+    game_state
+        .inventories
+        .write()
+        .await
+        .insert("reader".to_string(), inv);
+    rx
+}
+
+#[tokio::test]
+async fn enchant_scroll_enchants_wielded_weapon() {
+    let game_state = make_test_game_state("enchant_ok");
+    let _rx = setup_enchant_reader(&game_state, Some(("iron_sword", 0))).await;
+
+    game_state.use_item(&"reader".to_string(), 2).await;
+
+    let inv = game_state
+        .get_player_inventory(&"reader".to_string())
+        .await
+        .unwrap();
+    let weapon = inv.equipped.get(&EquipSlot::MainHand).unwrap();
+    assert_eq!(weapon.enchant, 1);
+    assert!(inv.bag.is_empty(), "the scroll should be consumed");
+}
+
+#[tokio::test]
+async fn enchant_scroll_requires_wielded_weapon() {
+    let game_state = make_test_game_state("enchant_no_weapon");
+    let mut rx = setup_enchant_reader(&game_state, None).await;
+
+    game_state.use_item(&"reader".to_string(), 2).await;
+
+    let inv = game_state
+        .get_player_inventory(&"reader".to_string())
+        .await
+        .unwrap();
+    assert_eq!(inv.bag.len(), 1, "the scroll should be kept");
+    match rx.try_recv() {
+        Ok(ServerMessage::InventoryError { message }) => {
+            assert!(
+                message.contains("no weapon"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("Expected InventoryError, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn enchant_scroll_destroys_over_enchanted_weapon() {
+    let game_state = make_test_game_state("enchant_boom");
+    // +8 is past the safe limit far enough that destruction is certain.
+    let _rx = setup_enchant_reader(&game_state, Some(("iron_sword", 8))).await;
+
+    game_state.use_item(&"reader".to_string(), 2).await;
+
+    let inv = game_state
+        .get_player_inventory(&"reader".to_string())
+        .await
+        .unwrap();
+    assert!(
+        !inv.equipped.contains_key(&EquipSlot::MainHand),
+        "the weapon should have evaporated"
+    );
+    assert!(inv.bag.is_empty(), "the scroll should be consumed");
 }

@@ -34,6 +34,17 @@ pub struct ItemDefinition {
     pub base_price: Option<i64>,
 }
 
+/// The effect produced by consuming a usable item via `use_item`, decided by
+/// the item's `category`. One place to extend when a new consumable lands.
+pub enum UseEffect {
+    /// Restore HP by rolling the given dice notation.
+    Heal(String),
+    /// Teleport the user back to the town spawn point.
+    TeleportTown,
+    /// Add +1 enchantment to the wielded weapon (NetHack style).
+    EnchantWeapon,
+}
+
 impl ItemDefinition {
     pub fn is_weapon(&self) -> bool {
         self.category.as_deref() == Some("weapon")
@@ -48,18 +59,15 @@ impl ItemDefinition {
         }
     }
 
-    /// HP-restore dice if this item is a healing potion, else `None`.
-    pub fn heal_dice(&self) -> Option<&str> {
-        if self.category.as_deref() == Some("healing_potion") {
-            self.dice.as_deref()
-        } else {
-            None
+    /// The effect of using this item from the bag, or `None` if it isn't a
+    /// consumable.
+    pub fn use_effect(&self) -> Option<UseEffect> {
+        match self.category.as_deref()? {
+            "healing_potion" => self.dice.clone().map(UseEffect::Heal),
+            "teleport_scroll" => Some(UseEffect::TeleportTown),
+            "enchant_scroll" => Some(UseEffect::EnchantWeapon),
+            _ => None,
         }
-    }
-
-    /// A read-once scroll that whisks the reader back to the town spawn.
-    pub fn is_teleport_scroll(&self) -> bool {
-        self.category.as_deref() == Some("teleport_scroll")
     }
 }
 
