@@ -97,9 +97,35 @@ mod tests {
                 last_combat_at: 0,
             },
         );
+        // A monster with every Option None guards the wire format itself:
+        // rmp_serde encodes structs as positional arrays, so any field that
+        // fails to serialize (e.g. a future `skip_serializing_if`) shifts
+        // the later fields and breaks this real serialize/deserialize path.
+        let mut monsters = HashMap::new();
+        monsters.insert(
+            "m1".to_string(),
+            Monster {
+                id: "m1".to_string(),
+                monster_type: "slime".to_string(),
+                position: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                rotation: 0.0,
+                state: MonsterState::Idle,
+                owner_id: None,
+                health: 8,
+                max_health: 8,
+                floor_level: 0,
+                level_override: None,
+                aggressive: true,
+                last_attack_at: 0,
+            },
+        );
         let msg = ServerMessage::GameState {
             players,
-            monsters: HashMap::new(),
+            monsters,
             ground_items: Vec::new(),
         };
         let bytes = serialize_server_msg(&msg).unwrap();
@@ -109,7 +135,9 @@ mod tests {
                 players, monsters, ..
             } => {
                 assert!(players.contains_key("p1"));
-                assert!(monsters.is_empty());
+                let m = &monsters["m1"];
+                assert_eq!(m.level_override, None);
+                assert!(m.aggressive);
             }
             _ => panic!("Wrong variant"),
         }

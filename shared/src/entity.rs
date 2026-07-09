@@ -28,7 +28,10 @@ pub struct Player {
     pub torch_on: bool,
     #[serde(default)]
     pub floor_level: i8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // NEVER add `skip_serializing_if` here: rmp_serde::to_vec encodes
+    // structs as positional arrays, so skipping a mid-struct field shifts
+    // every later field into the wrong slot on the wire.
+    #[serde(default)]
     pub object_type: Option<String>,
     #[serde(skip)]
     pub object_id: Option<u32>,
@@ -80,7 +83,11 @@ pub struct Monster {
     pub floor_level: i8,
     /// Depth-scaled combat level for dungeon monsters; `None` uses the
     /// monster definition's level.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // `skip_serializing_if` here dropped the field from rmp_serde's
+    // positional array for every overworld monster, shifting `aggressive`
+    // into this slot on the wire — the client then read the bool where it
+    // expected this u8 and rejected the whole message.
+    #[serde(default)]
     pub level_override: Option<u8>,
     /// Proactive (선공형) monster: attacks players on sight rather than only
     /// retaliating when hit. Drives behavior-tree selection on the agent-client.
@@ -88,4 +95,69 @@ pub struct Monster {
     pub aggressive: bool,
     #[serde(skip)]
     pub last_attack_at: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// rmp_serde encodes structs as positional arrays, so every field must
+    /// serialize unconditionally — a `skip_serializing_if` that fires shifts
+    /// all later fields into the wrong slots. These round-trip the exact
+    /// case that broke: an overworld monster with `level_override: None`
+    /// followed by a populated `aggressive` flag.
+    #[test]
+    fn monster_roundtrips_with_none_level_override() {
+        let monster = Monster {
+            id: "m1".into(),
+            monster_type: "slime".into(),
+            position: Position {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            rotation: 0.5,
+            state: MonsterState::Walk,
+            owner_id: None,
+            health: 10,
+            max_health: 12,
+            floor_level: 0,
+            level_override: None,
+            aggressive: true,
+            last_attack_at: 0,
+        };
+        let bytes = rmp_serde::to_vec(&monster).unwrap();
+        let decoded: Monster = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.level_override, None);
+        assert!(decoded.aggressive);
+    }
+
+    #[test]
+    fn player_roundtrips_with_none_object_type() {
+        let player = Player {
+            id: "p1".into(),
+            name: "jake".into(),
+            position: Position {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            rotation: 0.0,
+            level: 3,
+            health: 17,
+            max_health: 17,
+            class: CharacterClass::Knight,
+            gender: Gender::default(),
+            is_npc: false,
+            torch_on: true,
+            floor_level: 0,
+            object_type: None,
+            object_id: None,
+            last_combat_at: 0,
+        };
+        let bytes = rmp_serde::to_vec(&player).unwrap();
+        let decoded: Player = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.object_type, None);
+        assert!(decoded.torch_on);
+    }
 }
