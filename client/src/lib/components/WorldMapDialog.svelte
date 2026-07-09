@@ -425,14 +425,27 @@
       return
     }
     const teleportRequested = event.ctrlKey || teleportMode
-    if (!teleportRequested || !containerEl || containerW <= 0 || containerH <= 0)
-      return
+    if (!teleportRequested) return
     event.preventDefault()
     event.stopPropagation()
+    teleportAt(event.clientX, event.clientY)
+  }
+
+  // macOS turns Ctrl+click into a contextmenu event (no click fires at all),
+  // so the teleport shortcut must be caught here too.
+  function handleMapContextMenu(event: MouseEvent) {
+    if (!event.ctrlKey) return
+    event.preventDefault()
+    event.stopPropagation()
+    teleportAt(event.clientX, event.clientY)
+  }
+
+  function teleportAt(clientX: number, clientY: number) {
+    if (!containerEl || containerW <= 0 || containerH <= 0) return
 
     const rect = containerEl.getBoundingClientRect()
-    const pixelX = event.clientX - rect.left
-    const pixelY = event.clientY - rect.top
+    const pixelX = clientX - rect.left
+    const pixelY = clientY - rect.top
 
     const viewSize = zoomSpan * REGION_PX
     const canvasSize = Math.min(containerW, containerH)
@@ -505,6 +518,7 @@
       bind:this={containerEl}
       onpointerdown={handlePointerDown}
       onclick={handleMapClick}
+      oncontextmenu={handleMapContextMenu}
     >
       <canvas
         bind:this={canvasEl}
