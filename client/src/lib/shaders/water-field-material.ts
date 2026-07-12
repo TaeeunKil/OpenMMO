@@ -338,9 +338,9 @@ export function createWaterFieldMaterial(
   const uShallowColor = uniform(new THREE.Color(0.2, 0.58, 0.42))
   const uMidColor = uniform(new THREE.Color(0.02, 0.34, 0.32))
   const uDeepColor = uniform(new THREE.Color(0.002, 0.06, 0.18))
-  const uRiverShallowColor = uniform(new THREE.Color(0.18, 0.32, 0.32))
-  const uRiverMidColor = uniform(new THREE.Color(0.04, 0.12, 0.18))
-  const uRiverDeepColor = uniform(new THREE.Color(0.02, 0.05, 0.12))
+  const uRiverShallowColor = uniform(new THREE.Color(0.1, 0.18, 0.3))
+  const uRiverMidColor = uniform(new THREE.Color(0.03, 0.09, 0.2))
+  const uRiverDeepColor = uniform(new THREE.Color(0.015, 0.035, 0.11))
 
   /** Sea scatter-gradient depth normalization (m). */
   const uMaxDepth = uniform(2.5)
@@ -485,6 +485,11 @@ export function createWaterFieldMaterial(
     // Sea surface-effect gate: off inside inland channels (riverness) AND
     // near mouths (flow proximity).
     const seaFxGate = seaness.mul(seaness).mul(riverProxGate).toVar()
+    // River-styling weight for palette/alpha: riverness alone drops to 0
+    // at the mouth (estuary gate) while the water there is still visually
+    // the river — flow proximity keeps the river palette and bank alpha
+    // ramp all the way to the sea. Zero in open water (flow = 0).
+    const riverStyleW = max(riverness, float(1).sub(riverProxGate)).toVar()
     const bedHeight = heightmapTex.sample(sampleUV).r
     const depth = max(float(0), vOrigWorldPos.y.sub(bedHeight)).toVar()
     const depthFactorSea = clamp(depth.div(uMaxDepth), 0.0, 1.0)
@@ -587,13 +592,40 @@ export function createWaterFieldMaterial(
     // UV drift decorrelates neighbouring fragments at Voronoi seams and
     // confluences into a vortex artifact; wrapping each phase in [0, 1]
     // and crossfading two half-period-offset phases hides the wrap.
+    // `waternormals` is conventionally encoded around 0.5. Decode the
+    // averaged samples back to a signed vector before building the normal;
+    // subtracting 1 after the average left an almost constant diagonal tilt
+    // that hid the time-varying downstream ripple.
     const NORMAL_SCALE = float(0.18)
-    const buildWrappedDrift = (rate: N, flowVec: N) => {
-      const phase = uTime.mul(rate)
+    // Wrap frequency of the two-phase crossfade. Must stay BOTH low and
+    // spatially uniform:
+    //  * above ~1 Hz the phases cross-dissolve faster than the eye can
+    //    track, and (the blend's mean offset being a constant 0.5·drift)
+    //    the pattern time-averages into a near-static shimmer — raising
+    //    the rate made the river look SLOWER, which is how the old
+    //    riverness-blended 4.0 inland rate silently did nothing;
+    //  * a riverness-dependent rate lets fract(uTime·rate) diverge
+    //    without bound between neighbouring fragments, shredding the
+    //    estuary blend band into unrelated phases as uTime grows.
+    // Perceived current is therefore tuned with the drift LENGTH per
+    // cycle below, never with this rate:
+    //   speed ≈ |flow| · driftLen · RIPPLE_WRAP_RATE / NORMAL_SCALE  [m/s]
+    const RIPPLE_WRAP_RATE = float(0.35)
+    // Inland: |flow| ≈ 1 mid-channel ⇒ ~1.9 m/s — a brisk, clearly legible
+    // current (the baked flow map supplies direction and bank falloff).
+    // NOTE: with the coast-distance estuary gate this now applies to the
+    // whole inland course (plains included), not just mountain reaches.
+    const RIVER_DRIFT_LEN = float(1.0)
+    // Mouth: |flow| has decayed to 0.3 there ⇒ ~0.1 m/s, matching the
+    // deliberately gentle drift the estuary already had.
+    const ESTUARY_DRIFT_LEN = float(0.17)
+    const buildWrappedDrift = (driftLen: N, flowVec: N) => {
+      const phase = uTime.mul(RIPPLE_WRAP_RATE)
       const pA = fract(phase)
       const pB = fract(phase.add(0.5))
       const mixW = abs(pA.sub(0.5)).mul(2.0)
-      return { driftA: flowVec.mul(pA), driftB: flowVec.mul(pB), mixW }
+      const drift = flowVec.mul(driftLen)
+      return { driftA: drift.mul(pA), driftB: drift.mul(pB), mixW }
     }
     const buildRippleN = (
       a: N,
@@ -607,12 +639,14 @@ export function createWaterFieldMaterial(
         .sample(a.sub(offA))
         .add(normalMapTex.sample(b.sub(offA.mul(flowScale2))))
         .mul(0.5)
-        .sub(1.0)
+        .sub(0.5)
+        .mul(2.0)
       const sB = normalMapTex
         .sample(a.sub(offB))
         .add(normalMapTex.sample(b.sub(offB.mul(flowScale2))))
         .mul(0.5)
-        .sub(1.0)
+        .sub(0.5)
+        .mul(2.0)
       const s = mix(sA, sB, mixW)
       return normalize(vec3(s.r.mul(1.2), float(1.0), s.g.mul(1.2)))
     }
@@ -620,7 +654,17 @@ export function createWaterFieldMaterial(
       driftA: flowOffA,
       driftB: flowOffB,
       mixW: rippleMix,
-    } = buildWrappedDrift(float(0.4), flow)
+    } = buildWrappedDrift(
+      // Keep the very slow mouth intact, but recover the inland current soon
+      // after leaving it. This concentrates the deceleration at the sea end
+      // instead of making the whole lower reach feel sluggish.
+      mix(
+        ESTUARY_DRIFT_LEN,
+        RIVER_DRIFT_LEN,
+        smoothstep(float(0.3), float(0.85), riverness)
+      ),
+      flow
+    )
     const nBase1 = vOrigWorldPos.xz.mul(NORMAL_SCALE)
     const nBase2 = vOrigWorldPos.xz.mul(NORMAL_SCALE.mul(0.6)).add(vec2(0.3, 0))
     const riverN = buildRippleN(
@@ -631,7 +675,9 @@ export function createWaterFieldMaterial(
       float(0.7),
       rippleMix
     )
-    const surfaceNormal = normalize(mix(seaN, riverN, riverness))
+    // Flow remains valid through the estuary even after `riverness` reaches
+    // zero, so use the same styling weight that drives its colour/alpha.
+    const surfaceNormal = normalize(mix(seaN, riverN, riverStyleW))
 
     // ── Body color ──
     const seaC1 = mix(
@@ -659,7 +705,7 @@ export function createWaterFieldMaterial(
       uRiverDeepColor,
       smoothstep(float(0.4), float(0.85), depthFactorRiver)
     )
-    const waterColor = mix(seaBody, riverBody, riverness).toVar()
+    const waterColor = mix(seaBody, riverBody, riverStyleW).toVar()
 
     // ── View / screen ──
     const viewDir = normalize(vec3(uCameraDirection).negate())
@@ -677,7 +723,7 @@ export function createWaterFieldMaterial(
 
     // ── Refraction ──
     const distort = surfaceNormal.xz.mul(
-      mix(uRefractionStrength, float(0.04), riverness)
+      mix(uRefractionStrength, float(0.04), riverStyleW)
     )
     const refrUV = clamp(screenUVFlipped.add(distort), 0.0, 1.0)
     const refrRaw = refractionTex.sample(refrUV).rgb.toVar()
@@ -785,16 +831,8 @@ export function createWaterFieldMaterial(
       .toVar()
 
     const spT = uTime.mul(0.04)
-    const drift1 = mix(
-      vec2(spT, spT.mul(0.7)),
-      flow.mul(spT.mul(1.25)),
-      riverness
-    )
-    const drift2 = mix(
-      vec2(spT.mul(0.6), spT),
-      flow.mul(spT.mul(0.75)),
-      riverness
-    )
+    const drift1 = vec2(spT, spT.mul(0.7))
+    const drift2 = vec2(spT.mul(0.6), spT)
     const sp1 = normalMapTex.sample(vWorldPos.xz.mul(0.5).add(drift1)).r
     const sp2 = normalMapTex.sample(vWorldPos.xz.mul(0.8).sub(drift2)).g
     const waveCrestFactor = smoothstep(float(-0.05), float(0.1), vWaveHeight)
@@ -813,10 +851,10 @@ export function createWaterFieldMaterial(
       .mul(8.0)
       .mul(waveCrestFactor)
       .mul(max(sunSparkleStrength, moonSparkleStrength))
-    const riverSparkle = smoothstep(float(1.35), float(1.5), sp1.add(sp2))
-      .mul(3.0)
-      .mul(depthFactorRiver)
-    const sparkle = mix(seaSparkle, riverSparkle, riverness)
+    // River motion comes solely from its flow-advected normal map. Keep the
+    // sea's glitter out of the river/estuary instead of adding a second,
+    // more conspicuous motion layer.
+    const sparkle = seaSparkle.mul(float(1).sub(riverStyleW))
     specular.addAssign(uSunColor.rgb.mul(sparkle))
 
     // ── Sky reflection (shared structure, riverness-blended palettes) ──
@@ -842,7 +880,7 @@ export function createWaterFieldMaterial(
       .mul(nightFactor)
       .add(vec3(0.7, 0.35, 0.15).mul(twilightFactor))
       .add(
-        mix(vec3(0.55, 0.65, 0.75), vec3(0.45, 0.62, 0.82), riverness).mul(
+        mix(vec3(0.55, 0.65, 0.75), vec3(0.28, 0.42, 0.68), riverness).mul(
           dayFactor
         )
       )
@@ -854,7 +892,7 @@ export function createWaterFieldMaterial(
       .mul(nightFactor)
       .add(vec3(0.15, 0.1, 0.25).mul(twilightFactor))
       .add(
-        mix(vec3(0.12, 0.25, 0.5), vec3(0.12, 0.35, 0.8), riverness).mul(
+        mix(vec3(0.12, 0.25, 0.5), vec3(0.08, 0.22, 0.55), riverness).mul(
           dayFactor
         )
       )
@@ -891,8 +929,8 @@ export function createWaterFieldMaterial(
         skyReflection,
         cloudColor,
         cloudWeight
-          .mul(mix(float(0.42), float(0.95), reflectionMixScale))
-          .mul(riverness)
+          .mul(mix(float(0.26), float(0.6), reflectionMixScale))
+          .mul(riverStyleW)
       )
     )
     // …with sunset/night grading so night rivers don't mirror a day photo.
@@ -906,7 +944,7 @@ export function createWaterFieldMaterial(
       mix(
         skyReflection,
         sunsetCloudColor,
-        cloudHorizonWeight.mul(twilightFactor).mul(0.85).mul(riverness)
+        cloudHorizonWeight.mul(twilightFactor).mul(0.85).mul(riverStyleW)
       )
     )
     const nightCloudColor = mix(cloudColor, vec3(cloudLuma), 0.7)
@@ -916,7 +954,7 @@ export function createWaterFieldMaterial(
       mix(
         skyReflection,
         nightCloudColor,
-        cloudHorizonWeight.mul(nightFactor).mul(0.85).mul(riverness)
+        cloudHorizonWeight.mul(nightFactor).mul(0.85).mul(riverStyleW)
       )
     )
 
@@ -1243,7 +1281,7 @@ export function createWaterFieldMaterial(
     // ── River composite ──
     const riverFresnel = pow(float(1).sub(NdotV), float(2)).mul(0.5)
     const reflectionBase = mix(
-      float(0.35),
+      float(0.24),
       float(0.05),
       riverRefrShallow.mul(0.9)
     )
@@ -1276,7 +1314,7 @@ export function createWaterFieldMaterial(
     colorRiver.assign(mix(colorRiver, riverNightMuted, nightFactor))
 
     // ── Blend + global additions ──
-    const color = mix(colorSea, colorRiver, riverness).toVar()
+    const color = mix(colorSea, colorRiver, riverStyleW).toVar()
     color.addAssign(torchReflection)
     color.addAssign(vec3(1, 1, 1).mul(foamEdge.mul(0.8)))
     const residueTint = RESIDUE_DEBUG
@@ -1333,16 +1371,23 @@ export function createWaterFieldMaterial(
 
     // River: bank-to-body ramp; deep water goes opaque at night so a
     // torch-lit bed doesn't bleed through the last few percent.
+    // Near-zero floor with a 5 cm dead zone keeps water off the bank slope.
+    // Fade it in over just 10 cm so a character does not reveal a long,
+    // semi-transparent strip before reaching the actual channel depth.
     const riverAlpha = mix(
-      float(0.35),
+      float(0.02),
       float(0.95),
-      smoothstep(float(0.0), uRiverMaxDepth, depth)
+      smoothstep(float(0.05), float(0.15), depth)
     ).toVar()
     riverAlpha.assign(
       mix(riverAlpha, float(1.0), float(1).sub(dayFactor).mul(depthFactorRiver))
     )
 
-    const alpha = mix(seaAlpha, riverAlpha, riverness)
+    // River ramp by riverStyleW, not riverness: at the mouth the estuary
+    // gate zeroes riverness while the bank-taper sheet still hugs the
+    // grassy banks, and the sea path's 0.55 floor (with swash drained off
+    // by seaFxGate there) would render that sheet as standing floodwater.
+    const alpha = mix(seaAlpha, riverAlpha, riverStyleW)
       .add(foamEdge.mul(0.6))
       .add(residueFoam.mul(seaFxGate))
       .add(washFoam.mul(seaFxGate))

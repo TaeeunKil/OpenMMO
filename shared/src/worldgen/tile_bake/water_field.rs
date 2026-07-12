@@ -11,8 +11,8 @@
 //! it. Two extra channels drive the runtime shader blend:
 //!
 //! * `flow` — downstream direction scaled by an estuary decay (no longer
-//!   a unit vector): full speed inland, slowing to a drift as the bed
-//!   approaches sea level, zero outside the channel envelope.
+//!   a unit vector): full speed inland, slowing to a drift as the channel
+//!   nears the coastline, zero outside the channel envelope.
 //! * `riverness` — 1 inside an inland channel, 0 in open sea. The shader
 //!   cross-fades river behavior (flow ripples, river palette) against
 //!   sea behavior (Gerstner waves, foam bands, caustics).
@@ -52,7 +52,9 @@
 
 use super::super::global_map::GlobalMap;
 use super::super::noise::smoothstep;
-use super::super::vector_features::{project_point_to_segment, RiverSegment};
+use super::super::vector_features::{
+    min_distance_to_segments, project_point_to_segment, segments_near_tile, RiverSegment, Segment,
+};
 use super::constants::{
     HEIGHT_BIAS, HEIGHT_STEP, RIVER_CARVE_TAPER_EXTRA_M, RIVER_CARVE_TAPER_MIN_M,
     RIVER_DEPTH_OFFSET_M, RIVER_OFF_CHANNEL_SAFETY_M, VERTS_PER_SIDE,
@@ -70,11 +72,17 @@ const WATER_FIELD_TOTAL_SIZE: usize = WATER_FIELD_HEADER_SIZE + WATER_FIELD_PAYL
 /// Sea surface elevation (m). The whole worldgen pipeline treats 0 as sea
 /// level (heightmap bias, carve floors, coast extraction).
 const SEA_LEVEL_M: f32 = 0.0;
-/// Bed elevation span (m above sea level) over which a river hands off to
-/// the sea: riverness and flow speed ramp from sea-like (bed at 0) to
-/// fully river (bed at +1.5). Mirrors the estuary flow ramp the old
-/// river shader applied at draw time.
-const ESTUARY_GATE_SPAN_M: f32 = 1.5;
+/// Longitudinal estuary hand-off, keyed on the distance from the channel
+/// centerline (the pixel's projection point) to the nearest coastline:
+/// sea-like within `NEAR`, ramping to fully river beyond `FAR`. An
+/// earlier gate keyed on the carved bed's elevation (sea level → +1.5 m)
+/// instead, but lowland rivers carve their bed to ~sea level for
+/// kilometers, so the whole plains course baked out as estuary
+/// (riverness 0, flow 0.3) and the runtime shader couldn't tell a
+/// mid-plains reach from the mouth.
+const ESTUARY_COAST_NEAR_M: f32 = 32.0;
+/// See `ESTUARY_COAST_NEAR_M` — full river speed beyond this distance.
+const ESTUARY_COAST_FAR_M: f32 = 160.0;
 /// Smooth-max radius (m) for folding the river profile into the sea
 /// plane. Within ±k of the crossover the two surfaces blend with C1
 /// continuity instead of a hard `max()` kink.
@@ -127,6 +135,23 @@ pub fn bake_water_field(
         })
         .collect();
 
+    // Coast segments for the estuary gate. Filter margin: a pixel's
+    // centerline projection sits within `river_margin_m()` of the tile
+    // (beyond that the radial envelope is 0 and the gate is moot), and a
+    // coast segment farther than `FAR` from the projection can't change
+    // the saturated gate — so both tiles at a seam see every segment
+    // that matters, keeping the field seam-consistent.
+    let tile_max_x = tile_origin_x + (VERTS_PER_SIDE as f32 - 1.0);
+    let tile_max_z = tile_origin_z + (VERTS_PER_SIDE as f32 - 1.0);
+    let coast_segs = segments_near_tile(
+        &ctx.coasts_world,
+        tile_origin_x,
+        tile_origin_z,
+        tile_max_x,
+        tile_max_z,
+        ESTUARY_COAST_FAR_M + super::river_margin_m(),
+    );
+
     let mut out = Vec::with_capacity(WATER_FIELD_TOTAL_SIZE);
     out.extend_from_slice(WATER_FIELD_BIN_MAGIC);
     out.extend_from_slice(&WATER_FIELD_BIN_VERSION.to_le_bytes());
@@ -139,7 +164,16 @@ pub fn bake_water_field(
             let wx = tile_origin_x + i as f32;
             let wz = tile_origin_z + j as f32;
             let bed_y = heights[j * VERTS_PER_SIDE + i];
-            let px = compute_pixel(wx, wz, bed_y, map, ctx, river_segs, &seg_tangents);
+            let px = compute_pixel(
+                wx,
+                wz,
+                bed_y,
+                map,
+                ctx,
+                river_segs,
+                &seg_tangents,
+                &coast_segs,
+            );
             let v = ((px.surface_y + HEIGHT_BIAS) / HEIGHT_STEP)
                 .round()
                 .clamp(0.0, 65535.0) as u16;
@@ -238,9 +272,9 @@ fn weighted_flow_and_nearest(
 /// `riverness` fades on two axes: radially, from 1 inside the channel to
 /// 0 at `safety_end` (so the invisible off-channel zone reads as sea if
 /// terrain edits ever expose it); and longitudinally via the estuary
-/// gate, so the final sea-level reach of a river behaves like sea even
-/// inside the channel envelope. Flow uses the same radial envelope and
-/// only decelerates (never zeroes) along the estuary gate, keeping a
+/// gate — the final coast-adjacent reach of a river behaves like sea
+/// even inside the channel envelope. Flow uses the same radial envelope
+/// and only decelerates (never zeroes) along the estuary gate, keeping a
 /// seaward drift at the mouth.
 #[allow(clippy::too_many_arguments)]
 fn compute_pixel(
@@ -251,6 +285,7 @@ fn compute_pixel(
     ctx: &BakeContext,
     river_segs: &[RiverSegment],
     seg_tangents: &[(f32, f32)],
+    coast_segs: &[Segment],
 ) -> WaterPixel {
     let Some((flow_x, flow_z, idx, t, dist)) =
         weighted_flow_and_nearest(wx, wz, river_segs, seg_tangents)
@@ -291,9 +326,12 @@ fn compute_pixel(
     };
     let surface_y = smoothmax(profile, SEA_LEVEL_M, SURFACE_SMOOTHMAX_K_M);
 
-    // Longitudinal handoff to the sea, keyed on the carved bed at the
-    // centerline: full river at bed ≥ +1.5 m, full sea at bed ≤ 0.
-    let estuary_gate = smoothstep(SEA_LEVEL_M, SEA_LEVEL_M + ESTUARY_GATE_SPAN_M, bed_at_proj);
+    // Longitudinal handoff to the sea, keyed on the centerline's distance
+    // to the coastline: full sea within NEAR of the coast, full river
+    // beyond FAR. Evaluated at the projection (not the pixel) so a whole
+    // channel cross-section shares one gate value.
+    let coast_dist = min_distance_to_segments(proj_x, proj_z, coast_segs);
+    let estuary_gate = smoothstep(ESTUARY_COAST_NEAR_M, ESTUARY_COAST_FAR_M, coast_dist);
     // Radial envelope: 1 across the visible channel, fading to 0 at the
     // outer safety edge. Slightly wider than the visible bank fade so
     // wave damping ramps in before the bank alpha edge, not on it.
@@ -449,11 +487,19 @@ mod tests {
         assert!(r_far < 0.01, "riverness is zero off-channel, got {r_far}");
 
         // On-axis riverness/flow depend on the estuary gate, which reads
-        // the carved bed at the centerline projection — a property of the
-        // generated test world, not of the inputs above. Derive the
-        // expectation from the same sample the bake used.
-        let bed_at_proj = sample_carved_bed(&map, &ctx, 0.0, 0.0, &segs);
-        let gate = smoothstep(SEA_LEVEL_M, SEA_LEVEL_M + ESTUARY_GATE_SPAN_M, bed_at_proj);
+        // the coastline distance at the centerline projection — a
+        // property of the generated test world, not of the inputs above.
+        // Derive the expectation from the same query the bake used.
+        let coast_segs = segments_near_tile(
+            &ctx.coasts_world,
+            -32.0,
+            -32.0,
+            32.0,
+            32.0,
+            ESTUARY_COAST_FAR_M + crate::worldgen::tile_bake::river_margin_m(),
+        );
+        let coast_dist = min_distance_to_segments(0.0, 0.0, &coast_segs);
+        let gate = smoothstep(ESTUARY_COAST_NEAR_M, ESTUARY_COAST_FAR_M, coast_dist);
         assert!(
             (r_axis - gate).abs() < 0.01,
             "on-axis riverness equals the estuary gate ({gate}), got {r_axis}"
