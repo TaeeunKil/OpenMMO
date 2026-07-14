@@ -4,6 +4,7 @@ import type Monster from '../Monster.svelte'
 import type PlayerModel from '../PlayerModel.svelte'
 import type GameSceneWaterFieldLayer from './GameSceneWaterFieldLayer.svelte'
 import type GameSceneRiverRocksLayer from './GameSceneRiverRocksLayer.svelte'
+import type GameSceneShoreSprayLayer from './GameSceneShoreSprayLayer.svelte'
 import type GameSceneGrassLayer from './GameSceneGrassLayer.svelte'
 import type GameSceneTreeLayer from './GameSceneTreeLayer.svelte'
 import type GameSceneWindParticles from './GameSceneWindParticles.svelte'
@@ -29,6 +30,7 @@ export interface RenderPassesContext {
   entityClipGroup: THREE.Group | undefined
   waterLayerRef: GameSceneWaterFieldLayer | undefined
   riverRocksRef: GameSceneRiverRocksLayer | undefined
+  shoreSprayRef: GameSceneShoreSprayLayer | undefined
   grassLayerRef: GameSceneGrassLayer | undefined
   treeLayerRef: GameSceneTreeLayer | undefined
   windParticlesRef: GameSceneWindParticles | undefined
@@ -69,6 +71,9 @@ export function runRenderPasses(ctx: RenderPassesContext): void {
           // Rocks straddle the surface — leaving them in paints a ghost
           // "sunken rock" into the refracted bed image.
           ctx.riverRocksRef?.getGroup(),
+          // Spray droplets are above-surface billboards; keep them out of
+          // the refracted bed and the mirror.
+          ctx.shoreSprayRef?.getGroup(),
         ],
       },
       ctx.loopProfiler
@@ -92,6 +97,7 @@ export function runRenderPasses(ctx: RenderPassesContext): void {
           ctx.entityClipGroup,
           // Same policy as trees: no rock mirror image on the water.
           ctx.riverRocksRef?.getGroup(),
+          ctx.shoreSprayRef?.getGroup(),
         ],
         getNametagGroups: () => collectNametagGroups(ctx),
       },

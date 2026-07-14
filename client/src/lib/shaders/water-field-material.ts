@@ -147,8 +147,10 @@ const NOISE_PERIODS = 64
  *  and symmetric; shoaling raises and narrows it, with the shoreward face
  *  steepening fastest. Breaking collapses it into a low, broad bore. Widths
  *  are in noisy depth-space meters. */
-const SWELL_SPAWN_DEPTH = 1.5
-const SWELL_SHORE_DEPTH = 0.03
+// Exported so the shore-spray effect can reconstruct the crest's depth
+// travel (center = mix(SPAWN, SHORE, move)) and follow it CPU-side.
+export const SWELL_SPAWN_DEPTH = 1.5
+export const SWELL_SHORE_DEPTH = 0.03
 const SWELL_SPAWN_AMP = 0.18
 const SWELL_BREAK_AMP = 0.42
 const SWELL_SPAWN_W = 0.55
@@ -1250,6 +1252,11 @@ export function createWaterFieldMaterial(
             .mul(float(1).sub(washSolid))
             .add(washSolid)
         )
+        // Intentional: keep the mask on the wash so the backwash fades in
+        // the ~0.5 m depth band instead of sliding all the way to the break
+        // line. Removing it lets the retreat overshoot seaward — visually
+        // worse (confirmed by A/B), even though it looks like it clips the
+        // flush band.
         .mul(frontBiasedMask)
         .mul(breakFoamGain)
 

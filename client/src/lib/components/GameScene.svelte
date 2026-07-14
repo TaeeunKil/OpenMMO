@@ -27,6 +27,7 @@
   import GameSceneTerrainLayer from './game-scene/GameSceneTerrainLayer.svelte'
   import GameSceneWaterFieldLayer from './game-scene/GameSceneWaterFieldLayer.svelte'
   import GameSceneRiverRocksLayer from './game-scene/GameSceneRiverRocksLayer.svelte'
+  import GameSceneShoreSprayLayer from './game-scene/GameSceneShoreSprayLayer.svelte'
   import GameSceneGrassLayer from './game-scene/GameSceneGrassLayer.svelte'
   import GameSceneTreeLayer from './game-scene/GameSceneTreeLayer.svelte'
   import GameSceneWindParticles from './game-scene/GameSceneWindParticles.svelte'
@@ -155,6 +156,7 @@
   let waterGroup = $state<THREE.Group | undefined>(undefined)
   let waterLayerRef = $state<GameSceneWaterFieldLayer | undefined>(undefined)
   let riverRocksRef = $state<GameSceneRiverRocksLayer | undefined>(undefined)
+  let shoreSprayRef = $state<GameSceneShoreSprayLayer | undefined>(undefined)
   let grassLayerRef = $state<GameSceneGrassLayer | undefined>(undefined)
   let treeLayerRef = $state<GameSceneTreeLayer | undefined>(undefined)
   let windParticlesRef = $state<GameSceneWindParticles | undefined>(undefined)
@@ -292,6 +294,8 @@
     if (windGroup) windGroup.visible = !underground
     const riverRocksGroup = riverRocksRef?.getGroup?.()
     if (riverRocksGroup) riverRocksGroup.visible = !underground
+    const shoreSprayGroup = shoreSprayRef?.getGroup?.()
+    if (shoreSprayGroup) shoreSprayGroup.visible = !underground
     if (underground) {
       // The housing layer's per-frame detection is skipped underground;
       // clear its state so stale floor offsets can't leak into physics.
@@ -579,6 +583,8 @@
       // Update water uniforms — always use real sun direction (not moon)
       waterTime += realDeltaSeconds
       tickWavePhase(waterTime)
+      // Shore-spray pulses ride the same swell clock as the water shader.
+      shoreSprayRef?.update(deltaTime, camera, waterTime)
       waterSunDirTmp.set(sunSnapshot.direction.x, sunSnapshot.direction.y, sunSnapshot.direction.z)
       waterSunDir = waterSunDirTmp.clone()
       if (directionalLight) {
@@ -605,6 +611,7 @@
         entityClipGroup,
         waterLayerRef,
         riverRocksRef,
+        shoreSprayRef,
         grassLayerRef,
         treeLayerRef,
         windParticlesRef,
@@ -1012,6 +1019,15 @@
     sunDirection={waterSunDir}
     playerPosition={currentPlayer?.position ?? null}
     objectPlacements={$currentObjectData.placements}
+  />
+  <GameSceneShoreSprayLayer
+    bind:this={shoreSprayRef}
+    {terrainTiles}
+    {waterFieldManager}
+    heightManager={terrainHeightManager}
+    foamMap={waterFoamMap}
+    sunDirection={waterSunDir}
+    playerPosition={currentPlayer?.position ?? null}
   />
 {/if}
 
