@@ -100,24 +100,26 @@
     }
   }
 
-  function applyY(newY: number): ObjectRegionData | null {
+  /** Patch a field (or fields) on the selected placement in the store. Used by
+   *  the Y and Rot sliders' live-drag (oninput) path. Returns the updated region
+   *  data, or null if nothing is selected. */
+  function applyPatch(
+    patch: Partial<ObjectPlacement>
+  ): ObjectRegionData | null {
     if (selectedPlacementId === null) return null
     const data = get(currentObjectData)
     const updated: ObjectRegionData = {
       placements: data.placements.map((p) =>
-        p.id === selectedPlacementId ? { ...p, y: newY } : p
+        p.id === selectedPlacementId ? { ...p, ...patch } : p
       ),
     }
     currentObjectData.set(updated)
     return updated
   }
 
-  function previewY(newY: number) {
-    applyY(newY)
-  }
-
-  function commitY(newY: number) {
-    const updated = applyY(newY)
+  /** applyPatch + persist to disk. Used by the sliders' commit (onchange) path. */
+  function commitPatch(patch: Partial<ObjectPlacement>) {
+    const updated = applyPatch(patch)
     if (!updated) return
     const region = get(currentEditorRegion)
     if (region) {
@@ -337,15 +339,29 @@
               max={baseY + Y_RANGE}
               step="0.05"
               value={selectedPlacement.y}
-              oninput={(e) => previewY(parseFloat(e.currentTarget.value))}
-              onchange={(e) => commitY(parseFloat(e.currentTarget.value))}
+              oninput={(e) =>
+                applyPatch({ y: parseFloat(e.currentTarget.value) })}
+              onchange={(e) =>
+                commitPatch({ y: parseFloat(e.currentTarget.value) })}
             />
             <span class="y-value">{selectedPlacement.y.toFixed(2)}</span>
           </div>
         {/if}
         <div class="coord-row">
           <span class="info-label">Rot:</span>
-          <span class="info-value">{selectedPlacement.rotation}&deg;</span>
+          <input
+            class="y-slider"
+            type="range"
+            min="0"
+            max="360"
+            step="15"
+            value={selectedPlacement.rotation}
+            oninput={(e) =>
+              applyPatch({ rotation: parseInt(e.currentTarget.value, 10) })}
+            onchange={(e) =>
+              commitPatch({ rotation: parseInt(e.currentTarget.value, 10) })}
+          />
+          <span class="y-value">{selectedPlacement.rotation}&deg;</span>
         </div>
         <div class="coord-row">
           <span class="info-label">Floor:</span>
@@ -357,7 +373,9 @@
             <textarea
               class="text-input"
               rows="2"
-              placeholder="Shown on hover…"
+              placeholder={selectedDef?.procedural
+                ? 'Sign text…'
+                : 'Shown on hover…'}
               bind:value={textDraft}
               onchange={flushTextDraft}
               onblur={flushTextDraft}></textarea>

@@ -29,6 +29,7 @@
   } from '../../stores/housingStore'
   import { housingManager } from '../../managers/housingManager'
   import { loadGLB } from '../../utils/gltfCache'
+  import { buildShopSignBoard, buildShopSignText } from '../../utils/shop-sign'
   import type { Unsubscriber } from 'svelte/store'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
@@ -109,6 +110,34 @@
   >()
   const loadingModels = new SvelteSet<string>()
 
+  /** Build a procedural object template (text-less; text is added per instance
+   *  in rebuild). Returns null for unknown builder ids. */
+  function buildProceduralModel(kind: string): THREE.Group | null {
+    if (kind === 'shopSign') return buildShopSignBoard()
+    return null
+  }
+
+  /** Cache of baked sign-text meshes keyed by `type\0text`. buildShopSignText
+   *  allocates a CanvasTexture + node material + geometry that the disposer must
+   *  skip (WebGPU sampler crash on dispose), so building one per rebuild would
+   *  leak GPU memory on every editor interaction (dragging the Rot slider fires
+   *  rebuild() dozens of times/sec). Build once per unique text and hand out
+   *  clones — a Mesh clone shares geometry/material/texture, so no new GPU
+   *  resources are allocated. */
+  const signTextCache = new SvelteMap<string, THREE.Mesh>()
+
+  function getSignText(type: string, text: string): THREE.Object3D {
+    const key = `${type}\u0000${text}`
+    let base = signTextCache.get(key)
+    if (!base) {
+      base = buildShopSignText(text)
+      signTextCache.set(key, base)
+    }
+    // Clone shares the cached geometry/material/texture; a Mesh can only have
+    // one parent, so each placement needs its own lightweight clone.
+    return base.clone()
+  }
+
   async function getModel(objectId: string): Promise<THREE.Group | null> {
     if (modelCache.has(objectId)) return modelCache.get(objectId)!
     if (loadingModels.has(objectId)) return null
@@ -118,19 +147,34 @@
 
     loadingModels.add(objectId)
     try {
-      const gltf = await loadGLB(`/models/objects/${def.model}`)
-      // Bridges ray-cast against the cached, untransformed scene at runtime
-      // so the player Y tracks the actual deck curve precisely.
-      if (def.kind === 'bridge') {
-        bridgeManager.registerBridgeMesh(objectId, gltf.scene)
-      }
-      const model = gltf.scene.clone()
-      model.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.castShadow = true
-          child.receiveShadow = true
+      let model: THREE.Group | null
+      if (def.procedural) {
+        // Procedural objects (e.g. shop signs) build their geometry in code and
+        // register it into the same template cache the GLB path uses, so
+        // cloning, preview, selection box and per-instance text all work
+        // unchanged. Defer past any in-progress rebuild() before mutating the
+        // cache and re-running it, exactly as the GLB path's `await loadGLB`
+        // does — otherwise a synchronous rebuild() call from inside rebuild()'s
+        // own loop would re-enter and duplicate placements.
+        await Promise.resolve()
+        model = buildProceduralModel(def.procedural)
+      } else {
+        const gltf = await loadGLB(`/models/objects/${def.model}`)
+        // Bridges ray-cast against the cached, untransformed scene at runtime
+        // so the player Y tracks the actual deck curve precisely.
+        if (def.kind === 'bridge') {
+          bridgeManager.registerBridgeMesh(objectId, gltf.scene)
         }
-      })
+        model = gltf.scene.clone()
+        model.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.castShadow = true
+            child.receiveShadow = true
+          }
+        })
+      }
+      if (!model) return null
+
       const box = new THREE.Box3().setFromObject(model)
       const center = new THREE.Vector3()
       const size = new THREE.Vector3()
@@ -157,6 +201,11 @@
 
   function disposeClonedMaterials(obj: THREE.Object3D) {
     obj.traverse((child) => {
+      // Shop-sign text uses MeshBasicNodeMaterial + CanvasTexture, whose sampler
+      // bindings crash the WebGPU backend if disposed (see TextLabel.svelte and
+      // shop-sign.ts). The board reuses the shared housing door material, which
+      // other houses depend on. Leave both for GC / shared ownership.
+      if (child.userData?.isSignText || child.userData?.isSignBoard) return
       if (child instanceof THREE.Mesh && child.material) {
         child.material.dispose()
       } else if (child instanceof THREE.LineSegments) {
@@ -248,10 +297,17 @@
       }
       clone.userData.objectId = p.id
       clone.userData.objectType = p.type
-      if (p.text) {
-        clone.userData.objectText = p.text
-      }
       const catDef = catalogById.get(p.type)
+      if (p.text) {
+        if (catDef?.procedural === 'shopSign') {
+          // Persistent baked sign face — no hover bubble (so we skip objectText).
+          // Reuse a cached (undisposable) text mesh via clone so repeated
+          // rebuilds don't leak a fresh CanvasTexture each time.
+          clone.add(getSignText(p.type, p.text))
+        } else {
+          clone.userData.objectText = p.text
+        }
+      }
       if (catDef?.interaction) {
         clone.userData.objectInteraction = catDef.interaction
         clone.userData.objectInteractOffset = catDef.interactOffset

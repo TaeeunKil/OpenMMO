@@ -36,7 +36,7 @@ export class ObjectManager {
     if (cached) return cached
     await this.fetchCatalog()
     const def = this.getCatalogEntry(objectType)
-    if (!def) return null
+    if (!def || !def.model) return null
     const gltf = await loadGLB(`/models/objects/${def.model}`)
     const data = detectFootprint(gltf.scene)
     this.footprintCache.set(objectType, data)

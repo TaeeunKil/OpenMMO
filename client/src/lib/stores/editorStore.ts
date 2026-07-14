@@ -134,16 +134,25 @@ export interface BridgeMeta {
 export interface ObjectDef {
   id: string
   name: string
-  model: string
+  /** GLB filename under /models/objects/. Omitted for procedural objects. */
+  model?: string
+  /** Procedural builder id (e.g. "shopSign"). When set, geometry is generated
+   *  in code instead of loaded from a GLB. */
+  procedural?: string
   interaction?: string
   interactOffset?: Position
+  /** Absolute world Y to spawn new placements at, overriding the terrain-based
+   *  default (e.g. a shop sign that hangs above a door). Fine-tune per placement
+   *  with the editor's Y slider. */
+  defaultY?: number
   /** Snap placement position to 1m grid (cell corners) */
   gridAlign?: boolean
   /** Lift the flatten brush's target Y above the model's foot (bury the
    *  abutment by this many metres). Optional; defaults to 0. */
   flattenBuryDepth?: number
-  /** Show a per-instance text field in the editor; the text renders as an
-   *  in-game speech bubble on hover (e.g. signposts). */
+  /** Show a per-instance text field in the editor. For GLB signposts the text
+   *  renders as a speech bubble on hover; for procedural shop signs it is baked
+   *  into the sign face and shown persistently. */
   textLabel?: boolean
   kind?: 'bridge'
   bridge?: BridgeMeta

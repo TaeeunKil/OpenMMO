@@ -118,6 +118,13 @@
     "textLabel": true
   },
   {
+    "id": "shop_sign",
+    "name": "Shop Sign",
+    "procedural": "shopSign",
+    "textLabel": true,
+    "defaultY": 4.16
+  },
+  {
     "id": "barrel",
     "name": "Barrel",
     "model": "barrel.glb"

@@ -414,7 +414,7 @@
         ? heightManager.getHeightAtWorldPosition(snapped.x, snapped.z)
         : 0
       const floor = Math.max(0, currentPlayerFloor)
-      const y = terrainY + floorYBase(floor, DEFAULT_WALL_HEIGHT)
+      const y = objectSpawnY(currentObjectType, terrainY, floor)
       objectPreviewPos.set({ x: snapped.x, y, z: snapped.z })
     } else if (currentTool !== 'object') {
       objectPreviewPos.set(null)
@@ -561,6 +561,17 @@
     selectedObjectPlacementId.set(null)
   }
 
+  /** Spawn height for a new placement: the catalog's absolute `defaultY` if set
+   *  (e.g. shop signs), otherwise the terrain height plus the floor base. */
+  function objectSpawnY(
+    objectType: string,
+    terrainY: number,
+    floor: number
+  ): number {
+    const def = objectManager.getCatalogEntry(objectType)
+    return def?.defaultY ?? terrainY + floorYBase(floor, DEFAULT_WALL_HEIGHT)
+  }
+
   async function handleObjectMouseDown(worldX: number, worldZ: number) {
     if (currentObjectSubTool === 'place') {
       if (!currentObjectType) return
@@ -569,7 +580,7 @@
         ? heightManager.getHeightAtWorldPosition(snapped.x, snapped.z)
         : 0
       const floor = Math.max(0, currentPlayerFloor)
-      const y = terrainY + floorYBase(floor, DEFAULT_WALL_HEIGHT)
+      const y = objectSpawnY(currentObjectType, terrainY, floor)
       const data = get(currentObjectData)
       const maxId = data.placements.reduce((max, p) => Math.max(max, p.id), 0)
       const placement = {
