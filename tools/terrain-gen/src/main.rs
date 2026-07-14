@@ -13,12 +13,14 @@
 //!
 //! See `doc/TERRAIN_GENERATION.md` for the full design.
 
+mod apply_houses;
 mod bake;
 mod inspect;
 mod preview;
 mod prune_house_trees;
 
 use anyhow::Result;
+use apply_houses::ApplyOptions;
 use clap::{Args, Parser, Subcommand};
 use onlinerpg_shared::worldgen::WorldGenConfig;
 use prune_house_trees::PruneOptions;
@@ -290,6 +292,53 @@ enum Cmd {
         #[arg(long)]
         list_houses: bool,
     },
+
+    /// Re-apply persisted houses to a freshly baked world: flatten terrain to
+    /// each house floor, clear grass under ground-floor rooms, and prune
+    /// overlapping trees. The offline equivalent of the Map Editor's
+    /// "Reinstall", run for every house. Intended to run right after `bake`,
+    /// which regenerates (and wipes editor edits from) the tile files.
+    ApplyHouses {
+        /// Terrain directory containing `height/`, `grass/`, `trees/`.
+        #[arg(long, default_value = "data/terrain")]
+        terrain: PathBuf,
+
+        /// Housing directory containing chunk folders and house JSON files.
+        #[arg(long, default_value = "data/housing")]
+        housing: PathBuf,
+
+        /// Smoothstep blend skirt width (m) outside each flattened room.
+        #[arg(long, default_value_t = 4.0)]
+        blend_radius: f32,
+
+        /// Extra margin (m) around each room for grass clearing.
+        #[arg(long, default_value_t = 1.0)]
+        grass_margin: f32,
+
+        /// Extra margin (m) around each room for tree pruning.
+        #[arg(long, default_value_t = 2.0)]
+        tree_margin: f32,
+
+        /// Print what would change without writing any files.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Print the loaded houses before applying.
+        #[arg(long)]
+        list_houses: bool,
+
+        /// Skip the terrain-flatten pass.
+        #[arg(long)]
+        skip_flatten: bool,
+
+        /// Skip the grass-clear pass.
+        #[arg(long)]
+        skip_grass: bool,
+
+        /// Skip the tree-prune pass.
+        #[arg(long)]
+        skip_trees: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -360,6 +409,29 @@ fn main() -> Result<()> {
             margin,
             dry_run,
             list_houses,
+        }),
+        Cmd::ApplyHouses {
+            terrain,
+            housing,
+            blend_radius,
+            grass_margin,
+            tree_margin,
+            dry_run,
+            list_houses,
+            skip_flatten,
+            skip_grass,
+            skip_trees,
+        } => apply_houses::run(ApplyOptions {
+            terrain,
+            housing,
+            tree_margin,
+            blend_radius,
+            grass_margin,
+            dry_run,
+            list_houses,
+            skip_flatten,
+            skip_grass,
+            skip_trees,
         }),
     }
 }

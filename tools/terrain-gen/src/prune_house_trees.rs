@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use onlinerpg_shared::housing::{HouseData, RoomType};
+use onlinerpg_shared::housing::{HouseData, RoomData, RoomType};
 use onlinerpg_terrain::{
     coords,
     trees::{filter_tree_v1_bytes_in_rects, TreeExclusionRect},
@@ -47,11 +47,17 @@ fn collect_house_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn house_tree_rects(house: &HouseData, margin: f32) -> Vec<TreeExclusionRect> {
+/// A room that sits on the ground floor and isn't a stairwell — the rooms that
+/// define a house's terrain footprint. Shared by the tree/flatten/grass passes.
+pub fn is_ground_floor(room: &RoomData) -> bool {
+    room.floor_level == 0 && room.room_type != RoomType::Stairwell
+}
+
+pub fn house_tree_rects(house: &HouseData, margin: f32) -> Vec<TreeExclusionRect> {
     house
         .rooms
         .iter()
-        .filter(|room| room.floor_level == 0 && room.room_type != RoomType::Stairwell)
+        .filter(|room| is_ground_floor(room))
         .map(|room| {
             let min_x = house.origin.x + room.local_x as f32 - margin;
             let min_z = house.origin.z + room.local_z as f32 - margin;
@@ -84,7 +90,7 @@ fn print_house_list(houses: &[HouseData], margin: f32) {
     }
 }
 
-fn rect_tiles([min_x, min_z, max_x, max_z]: TreeExclusionRect) -> Vec<(i32, i32)> {
+pub fn rect_tiles([min_x, min_z, max_x, max_z]: TreeExclusionRect) -> Vec<(i32, i32)> {
     let tile_min_x = coords::world_to_tile(min_x);
     let tile_max_x = coords::world_to_tile(max_x);
     let tile_min_z = coords::world_to_tile(min_z);
@@ -99,7 +105,7 @@ fn rect_tiles([min_x, min_z, max_x, max_z]: TreeExclusionRect) -> Vec<(i32, i32)
     tiles
 }
 
-fn union_tiles(rects: &[TreeExclusionRect]) -> BTreeSet<(i32, i32)> {
+pub fn union_tiles(rects: &[TreeExclusionRect]) -> BTreeSet<(i32, i32)> {
     let mut tiles = BTreeSet::new();
     for &rect in rects {
         tiles.extend(rect_tiles(rect));
@@ -107,7 +113,7 @@ fn union_tiles(rects: &[TreeExclusionRect]) -> BTreeSet<(i32, i32)> {
     tiles
 }
 
-fn load_houses(housing_dir: &Path) -> Result<Vec<HouseData>> {
+pub fn load_houses(housing_dir: &Path) -> Result<Vec<HouseData>> {
     let mut files = Vec::new();
     collect_house_files(housing_dir, &mut files)?;
     files.sort();
@@ -123,6 +129,58 @@ fn load_houses(housing_dir: &Path) -> Result<Vec<HouseData>> {
     Ok(houses)
 }
 
+/// Result of a tree-prune pass.
+pub struct PruneOutcome {
+    /// Number of tree tiles inspected (the union of all rect footprints).
+    pub tiles_checked: usize,
+    /// Tiles whose tree file was rewritten.
+    pub changed_tiles: BTreeSet<(i32, i32)>,
+    /// Total tree instances removed.
+    pub trees_removed: usize,
+}
+
+/// Remove tree instances overlapping `rects` from every affected tree tile.
+/// Shared by the standalone `prune-house-trees` command and the combined
+/// `apply-houses` command.
+pub fn prune_trees(
+    terrain: &Path,
+    rects: &[TreeExclusionRect],
+    dry_run: bool,
+) -> Result<PruneOutcome> {
+    let tiles = union_tiles(rects);
+    let tiles_checked = tiles.len();
+    let mut changed_tiles = BTreeSet::new();
+    let mut trees_removed = 0;
+
+    for (tile_x, tile_z) in tiles {
+        let path = coords::tree_path(terrain, tile_x, tile_z);
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
+        };
+
+        let Some((filtered, removed)) = filter_tree_v1_bytes_in_rects(tile_x, tile_z, &data, rects)
+            .with_context(|| format!("filter {}", path.display()))?
+        else {
+            continue;
+        };
+
+        if !dry_run {
+            fs::write(&path, filtered).with_context(|| format!("write {}", path.display()))?;
+        }
+
+        trees_removed += removed;
+        changed_tiles.insert((tile_x, tile_z));
+    }
+
+    Ok(PruneOutcome {
+        tiles_checked,
+        changed_tiles,
+        trees_removed,
+    })
+}
+
 pub fn run(options: PruneOptions) -> Result<()> {
     let houses = load_houses(&options.housing)?;
 
@@ -135,36 +193,14 @@ pub fn run(options: PruneOptions) -> Result<()> {
         rects.extend(house_tree_rects(house, options.margin));
     }
 
-    let tiles = union_tiles(&rects);
-    let mut stats = PruneStats {
+    let outcome = prune_trees(&options.terrain, &rects, options.dry_run)?;
+    let stats = PruneStats {
         houses_read: houses.len(),
         rects: rects.len(),
-        tiles_checked: tiles.len(),
-        ..PruneStats::default()
+        tiles_checked: outcome.tiles_checked,
+        trees_removed: outcome.trees_removed,
+        changed_tiles: outcome.changed_tiles,
     };
-
-    for (tile_x, tile_z) in tiles {
-        let path = coords::tree_path(&options.terrain, tile_x, tile_z);
-        let data = match fs::read(&path) {
-            Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-        };
-
-        let Some((filtered, removed)) =
-            filter_tree_v1_bytes_in_rects(tile_x, tile_z, &data, &rects)
-                .with_context(|| format!("filter {}", path.display()))?
-        else {
-            continue;
-        };
-
-        if !options.dry_run {
-            fs::write(&path, filtered).with_context(|| format!("write {}", path.display()))?;
-        }
-
-        stats.trees_removed += removed;
-        stats.changed_tiles.insert((tile_x, tile_z));
-    }
 
     println!(
         "{} house tree prune: {} house(s), {} footprint rect(s), {} tile(s) checked, {} tile(s) changed, {} tree(s) removed",

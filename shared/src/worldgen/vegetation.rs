@@ -299,9 +299,13 @@ fn encode_tree_v1(tree1: &[(f32, f32, f32, f32)], tree2: &[(f32, f32, f32, f32)]
 // Grass (V3 quantized format).
 // ==================================================================
 
-const GRASS_V3_MAGIC: u32 = 0x4752_3033; // "GR03"
-const GRASS_V3_HEADER_BYTES: usize = 16;
-const GRASS_V3_BYTES_PER_INSTANCE: usize = 6;
+/// On-disk grass placement format (magic "GR03"): 16-byte header
+/// (`magic`, `shortCount`, `tallCount`, `flowerCount`) + 6 bytes per instance
+/// (`u16 px`, `u16 pz`, `u8 rotation`, `u8 scale`). Public so readers (e.g. the
+/// offline `apply-houses` grass filter) parse the exact format this writes.
+pub const GRASS_V3_MAGIC: u32 = 0x4752_3033; // "GR03"
+pub const GRASS_V3_HEADER_BYTES: usize = 16;
+pub const GRASS_V3_BYTES_PER_INSTANCE: usize = 6;
 
 const SHORT_SCALE_MIN: f32 = 0.4;
 const SHORT_SCALE_RANGE: f32 = 0.3;
