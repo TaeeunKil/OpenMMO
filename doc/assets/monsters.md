@@ -15,7 +15,8 @@
     > make his skin more green
 
     ![원화](../images/orc-concept.png)
-- female orc https://create.verse8.io/ 에서 2d -> 3d 생성함
+- female orc https://create.verse8.io/ 에서 2d -> 3d 생성함; 원화는 chatgpt.com에서 생성 ![원화](../images/female-orc-concept.png)
+- goblin https://create.verse8.io/ 에서 2d -> 3d 생성함; 원화는 chatgpt.com에서 생성 ![원화](../images/goblin-concept.png)
 - kobold https://create.verse8.io/ 에서 2d -> 3d 생성함
   - 원화는 chatgpt.com에서 다음 프롬프트로 생성함
     > d&d 혹은 nethack에 나오는 kobold를 3d로 제작할 수 있게 T자형 포즈로 그려줘
