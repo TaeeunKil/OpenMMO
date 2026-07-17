@@ -29,7 +29,7 @@ pub fn validate_house(house: &HouseData) -> Result<(), String> {
         return Err("House origin must be finite".into());
     }
     // Z shares the world's square extent even though only X wraps
-    let in_world = |v: f32| v >= WORLD_MIN_X && v < WORLD_MAX_X;
+    let in_world = |v: f32| (WORLD_MIN_X..WORLD_MAX_X).contains(&v);
     if !in_world(origin.x) || !in_world(origin.z) {
         return Err("House origin out of world bounds".into());
     }
