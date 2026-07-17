@@ -1,10 +1,10 @@
-use crate::auth::CharacterSaveData;
+use crate::auth::{AuthError, AuthService, CharacterSaveData};
 use crate::types::{CharacterAttributes, Player, PlayerId, Position, ServerMessage};
 use crate::world_config::world_config;
 use onlinerpg_shared::{shortest_world_delta_x, wrap_world_x, PLAYER_MOVE_SPEED};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Headroom over walk speed so the sim absorbs network jitter and catches up.
 const MOVE_SPEED_SLACK: f32 = 1.15;
@@ -31,6 +31,22 @@ impl PartialEq for MoveIntent {
             && self.rotation == other.rotation
             && self.floor_level == other.floor_level
             && self.check_collision == other.check_collision
+    }
+}
+
+/// Run a blocking DB save on the blocking pool and await it, logging a join
+/// panic or a save error under `what` instead of propagating. Awaiting is the
+/// point: callers rely on the write having completed before they continue.
+async fn flush_save<F>(op: F, what: &str)
+where
+    F: FnOnce() -> Result<(), AuthError> + Send + 'static,
+{
+    let result = tokio::task::spawn_blocking(op).await.unwrap_or_else(|e| {
+        error!("spawn_blocking panicked: {}", e);
+        Ok(())
+    });
+    if let Err(e) = result {
+        error!("Failed to save {}: {}", what, e);
     }
 }
 
@@ -164,7 +180,7 @@ impl super::GameState {
         gold_map.get(player_id).copied().unwrap_or(0)
     }
 
-    pub async fn kick_player_by_name(&self, name: &str) -> Option<PlayerId> {
+    pub async fn kick_player_by_name(&self, name: &str, auth: &AuthService) -> Option<PlayerId> {
         let old_player_id = {
             let players = self.players.read().await;
             players
@@ -175,6 +191,12 @@ impl super::GameState {
 
         if let Some(ref player_id) = old_player_id {
             info!("Kicking existing player '{}' ({})", name, player_id);
+
+            // Persist and detach the departing session's state *before* the
+            // replacement login reads the DB. Otherwise the async disconnect
+            // save could land after the new session's inventory load, letting
+            // a drop/pickup be duplicated across the swap (F-015).
+            self.persist_and_detach_player(player_id, auth).await;
 
             self.send_direct_message(
                 player_id,
@@ -189,6 +211,32 @@ impl super::GameState {
         }
 
         old_player_id
+    }
+
+    /// Synchronously write a player's character row and inventory to the DB,
+    /// detaching the in-memory inventory. Shared by the disconnect path and by
+    /// session replacement (kick), which relies on the inventory being flushed
+    /// before the replacement login loads from the DB (F-015).
+    ///
+    /// Must run *before* `unregister_player_character`: both the character-state
+    /// and inventory snapshots resolve the character id through
+    /// `player_characters`, so unregistering first would silently skip both
+    /// saves while still detaching the inventory.
+    pub async fn persist_and_detach_player(&self, player_id: &PlayerId, auth: &AuthService) {
+        if let Some(save_data) = self.get_player_save_data(player_id).await {
+            self.remove_dirty(player_id).await;
+            let auth = auth.clone();
+            flush_save(
+                move || auth.save_characters_batch(&[save_data]),
+                "character state",
+            )
+            .await;
+        }
+
+        if let Some((char_id, items)) = self.take_player_inventory(player_id).await {
+            let auth = auth.clone();
+            flush_save(move || auth.save_inventory(char_id, &items), "inventory").await;
+        }
     }
 
     pub async fn add_player(&self, mut player: Player) -> Option<ServerMessage> {

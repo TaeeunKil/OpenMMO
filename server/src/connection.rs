@@ -283,38 +283,13 @@ pub async fn handle_connection(
         }
     }
 
-    // Save full character state and inventory to DB before cleanup
+    // Save full character state and inventory to DB before cleanup. A kick
+    // already flushed and detached the replaced session, so this is a no-op
+    // for that player id.
     if let Some(ref id) = state.player_id {
-        if let Some(save_data) = game_state.get_player_save_data(id).await {
-            game_state.remove_dirty(id).await;
-            let auth = auth_service.clone();
-            if let Err(e) =
-                tokio::task::spawn_blocking(move || auth.save_characters_batch(&[save_data]))
-                    .await
-                    .unwrap_or_else(|e| {
-                        error!("spawn_blocking panicked: {}", e);
-                        Ok(())
-                    })
-            {
-                error!("Failed to save character state on disconnect: {}", e);
-            }
-        }
-
-        // Save inventory
-        if let Some((char_id, items)) = game_state.get_inventory_save_data(id).await {
-            let auth = auth_service.clone();
-            if let Err(e) =
-                tokio::task::spawn_blocking(move || auth.save_inventory(char_id, &items))
-                    .await
-                    .unwrap_or_else(|e| {
-                        error!("spawn_blocking panicked: {}", e);
-                        Ok(())
-                    })
-            {
-                error!("Failed to save inventory on disconnect: {}", e);
-            }
-        }
-        game_state.unload_player_inventory(id).await;
+        game_state
+            .persist_and_detach_player(id, &auth_service)
+            .await;
 
         game_state.unregister_direct_channel(id).await;
         game_state.unregister_player_character(id).await;
@@ -608,7 +583,7 @@ async fn handle_client_message(
 
             // Enforced unique character names allow name-based session replacement.
             game_state
-                .kick_player_by_name(&selected_character.name)
+                .kick_player_by_name(&selected_character.name, auth_service)
                 .await;
 
             let max_hp = selected_character.max_hp;

@@ -208,13 +208,27 @@ impl super::GameState {
         inventories.insert(player_id.clone(), inventory);
     }
 
-    pub async fn unload_player_inventory(&self, player_id: &PlayerId) {
-        {
+    /// Detach a player's inventory from memory and hand back the snapshot to
+    /// persist. The character id is resolved *before* the removal, so a missing
+    /// mapping bails without dropping the inventory; the `remove` then captures
+    /// the items in one step, stopping a departing session from mutating them
+    /// between the read and the detach (F-015).
+    pub async fn take_player_inventory(&self, player_id: &PlayerId) -> Option<(i64, Vec<ItemRow>)> {
+        let char_id = {
+            let player_chars = self.player_characters.read().await;
+            let (char_id, _, _) = player_chars.get(player_id)?;
+            *char_id
+        };
+        let removed = {
             let mut inventories = self.inventories.write().await;
-            inventories.remove(player_id);
+            inventories.remove(player_id)
+        };
+        {
+            let mut dirty = self.dirty_inventories.write().await;
+            dirty.remove(player_id);
         }
-        let mut dirty = self.dirty_inventories.write().await;
-        dirty.remove(player_id);
+
+        Some((char_id, serialize_inventory(&removed?)))
     }
 
     pub async fn get_player_inventory(&self, player_id: &PlayerId) -> Option<PlayerInventory> {
@@ -930,19 +944,6 @@ impl super::GameState {
         }
 
         result
-    }
-
-    pub async fn get_inventory_save_data(
-        &self,
-        player_id: &PlayerId,
-    ) -> Option<(i64, Vec<ItemRow>)> {
-        let inventories = self.inventories.read().await;
-        let player_chars = self.player_characters.read().await;
-
-        let inv = inventories.get(player_id)?;
-        let (char_id, _, _) = player_chars.get(player_id)?;
-
-        Some((*char_id, serialize_inventory(inv)))
     }
 }
 

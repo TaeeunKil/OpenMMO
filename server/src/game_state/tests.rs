@@ -1697,3 +1697,78 @@ async fn furniture_removal_reopens_blocked_cells() {
     game_state.tick_player_movement(60.0).await;
     assert_eq!(player_xz(&game_state, &player_id).await, (0.5, 6.5));
 }
+
+// F-015: session replacement (kick) must flush the departing session's
+// inventory to the DB before a replacement login can load it. Otherwise the
+// old async disconnect-save races the new session's load, letting a dropped
+// item survive in the DB snapshot and be picked up again (duplication).
+#[tokio::test]
+async fn kick_flushes_dropped_inventory_before_replacement_load() {
+    let db_path = std::env::temp_dir().join(format!("onlinerpg_f015_{}.db", uuid::Uuid::new_v4()));
+    let auth = crate::auth::AuthService::new(db_path).unwrap();
+    let account = auth.login_npc("npc_f015_account").unwrap();
+    let attributes = CharacterAttributes {
+        r#str: 12,
+        dex: 12,
+        con: 12,
+        int: 12,
+        wis: 12,
+        cha: 12,
+        guard: 10,
+    };
+    let record = auth
+        .create_character(
+            &account,
+            "Dupeknight",
+            &attributes,
+            16,
+            CharacterClass::Knight,
+            Gender::Male,
+        )
+        .unwrap();
+    let char_id = record.id;
+
+    // DB snapshot before the drop: one sword in the bag.
+    auth.save_inventory(
+        char_id,
+        &[crate::auth::ItemRow {
+            item_def_id: "worn_iron_sword".to_string(),
+            quantity: 1,
+            equip_slot: None,
+            enchant: 0,
+        }],
+    )
+    .unwrap();
+
+    let game_state = make_test_game_state("f015_kick_flush");
+
+    // Session A enters: player registered and inventory loaded from the DB.
+    let a = "session_a".to_string();
+    let mut player = make_player(&a, 0.0, 0.0);
+    player.name = record.name.clone();
+    game_state.add_player(player).await;
+    game_state
+        .register_player_character(&a, char_id, record.xp, attributes, record.gold)
+        .await;
+    game_state.load_player_inventory(&a, char_id, &auth).await;
+
+    // A drops the sword (in-memory only; not yet persisted).
+    let instance_id = game_state.get_player_inventory(&a).await.unwrap().bag[0].instance_id;
+    game_state.drop_item(&a, instance_id).await;
+    assert!(game_state
+        .get_player_inventory(&a)
+        .await
+        .unwrap()
+        .bag
+        .is_empty());
+    // The window F-015 raced: the DB still holds the pre-drop snapshot.
+    assert_eq!(auth.load_inventory(char_id).unwrap().len(), 1);
+
+    // A replacement login kicks A by (unique) character name.
+    game_state.kick_player_by_name(&record.name, &auth).await;
+
+    // The kick flushed A's post-drop inventory and detached it, so a
+    // replacement load reads zero swords (no dupe) instead of a stale one.
+    assert_eq!(auth.load_inventory(char_id).unwrap().len(), 0);
+    assert!(game_state.get_player_inventory(&a).await.is_none());
+}
