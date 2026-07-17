@@ -1,7 +1,7 @@
 <script lang="ts">
   import { T, useLoader } from '@threlte/core'
   import * as THREE from 'three'
-  import { GLTFLoader } from 'three/examples/jsm/Addons.js'
+  import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
   import { onMount } from 'svelte'
 
   interface Props {

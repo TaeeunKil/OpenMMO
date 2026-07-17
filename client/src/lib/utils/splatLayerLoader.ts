@@ -1,6 +1,5 @@
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/Addons.js'
-import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { SplatLayer } from '../components/makeSplatStandardMaterial'
 import paletteJson from '../../../../shared/palette.json'
 

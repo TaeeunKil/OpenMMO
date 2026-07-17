@@ -148,8 +148,11 @@ export function makeSplatStandardMaterial({
   splatMap.anisotropy = 1
   splatMap.needsUpdate = true
 
-  const uTileScales = uniformArray(padTileScales(tileScales), 'float')
-  const uTileSwapUvs = uniformArray(padTileSwapUvs(tileSwapUvs), 'float')
+  const uTileScales = uniformArray<'float'>(padTileScales(tileScales), 'float')
+  const uTileSwapUvs = uniformArray<'float'>(
+    padTileSwapUvs(tileSwapUvs),
+    'float'
+  )
   const uSplatScale = uniform(splatScale)
 
   // Always compiled in (single pipeline variant). Inactive by default, so
@@ -236,8 +239,11 @@ export function makeSplatStandardMaterial({
   // UV 90° CW `(u, v) → (v, -u)`. A transpose would look similar but flips
   // handedness — preserve rotation so tangent-space normals stay consistent.
   // `swap` is echoed back so the normal path can apply the matching rotation.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function slotUv(idxF: any, tileScale: any, swap: any) {
+  function slotUv(
+    idxF: Node<'float'>,
+    tileScale: Node<'float'>,
+    swap: Node<'float'>
+  ) {
     const slotCol = idxF.mod(float(ATLAS_GRID))
     const slotRow = idxF.div(float(ATLAS_GRID)).floor()
     const slotOffset = vec2(slotCol, slotRow).mul(GRID_INV)

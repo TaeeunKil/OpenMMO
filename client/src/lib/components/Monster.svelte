@@ -1,7 +1,8 @@
 <script lang="ts">
   import { T, useLoader } from '@threlte/core'
   import TextLabel from './TextLabel.svelte'
-  import { SkeletonUtils, GLTFLoader } from 'three/examples/jsm/Addons.js'
+  import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+  import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'
   import * as THREE from 'three'
   import { get } from 'svelte/store'
   import { untrack } from 'svelte'

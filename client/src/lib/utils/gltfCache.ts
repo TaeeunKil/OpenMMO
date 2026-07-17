@@ -1,5 +1,4 @@
-import { GLTFLoader } from 'three/examples/jsm/Addons.js'
-import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 /**
  * Module-level GLB cache shared across all Threlte contexts.
