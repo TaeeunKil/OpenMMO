@@ -13,7 +13,10 @@ use onlinerpg_shared::{deserialize_client_msg, serialize_server_msg};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    accept_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message},
+};
 use tracing::{error, info, warn};
 
 const FALLBACK_DEFAULT_MAX_HP: u32 = 13;
@@ -45,6 +48,16 @@ const HEARTBEAT_TIMEOUT_SECS: u64 = 30;
 /// from connect time (not heartbeats — those are accepted pre-auth) so idle
 /// sockets can't hold server resources without ever authenticating.
 const UNAUTH_TIMEOUT_SECS: u64 = 60;
+
+/// Caps tungstenite's 64 MiB default; legit client messages are a few KB.
+const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// Per-connection read buffer; the 128 KiB default is oversized for game packets.
+const WS_READ_BUFFER_BYTES: usize = 16 * 1024;
+
+/// Tighter caps until auth succeeds (pre-auth traffic: auth attempts + heartbeats).
+const UNAUTH_MAX_MESSAGE_BYTES: usize = 8 * 1024;
+const UNAUTH_MAX_MESSAGES: u32 = 30;
 
 struct ConnectionState {
     account_name: Option<String>,
@@ -99,7 +112,11 @@ pub async fn handle_connection(
     auth_service: Arc<AuthService>,
     auth_ctx: Arc<AuthContext>,
 ) {
-    let ws_stream = match accept_async(stream).await {
+    let ws_config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_WS_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_WS_MESSAGE_BYTES))
+        .read_buffer_size(WS_READ_BUFFER_BYTES);
+    let ws_stream = match accept_async_with_config(stream, Some(ws_config)).await {
         Ok(ws) => ws,
         Err(e) => {
             error!("WebSocket handshake failed: {}", e);
@@ -114,6 +131,7 @@ pub async fn handle_connection(
     let mut state = ConnectionState::new();
 
     let mut heartbeat_check = tokio::time::interval(std::time::Duration::from_secs(10));
+    let mut unauth_message_count: u32 = 0;
 
     loop {
         tokio::select! {
@@ -136,6 +154,22 @@ pub async fn handle_connection(
 
             // Handle incoming messages from client
             msg = ws_receiver.next() => {
+                // Metered before the type match so Text/Ping can't bypass it
+                if state.account_name.is_none() {
+                    if let Some(Ok(m)) = &msg {
+                        unauth_message_count += 1;
+                        if m.len() > UNAUTH_MAX_MESSAGE_BYTES
+                            || unauth_message_count > UNAUTH_MAX_MESSAGES
+                        {
+                            warn!(
+                                "Dropping unauthenticated connection: pre-auth limits exceeded ({} bytes, message #{})",
+                                m.len(),
+                                unauth_message_count
+                            );
+                            break;
+                        }
+                    }
+                }
                 match msg {
                     Some(Ok(Message::Binary(bytes))) => {
                         match handle_client_message(
