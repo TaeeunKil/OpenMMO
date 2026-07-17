@@ -271,6 +271,25 @@ async fn main() {
         no_spawn_zones,
         dungeon_defs::DungeonDefs::load(),
     ));
+    // Player movement simulation: walks pending move intents toward their
+    // targets at capped speed (server-authoritative positions, F-006).
+    let game_state_for_movement = Arc::clone(&game_state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        let mut last = std::time::Instant::now();
+        loop {
+            interval.tick().await;
+            let now = std::time::Instant::now();
+            let dt = (now - last).as_secs_f32();
+            last = now;
+            guard_tick(
+                "player movement",
+                game_state_for_movement.tick_player_movement(dt),
+            )
+            .await;
+        }
+    });
+
     // Monster spawn tick task
     let game_state_for_spawns = Arc::clone(&game_state);
     tokio::spawn(async move {

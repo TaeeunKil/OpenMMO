@@ -100,6 +100,10 @@ mod tests {
 /// decide which entities to surface to the LLM. Shared so the two stay equal.
 pub const NPC_SIGHT_RADIUS: f32 = 27.0;
 
+/// Player walk speed in units/sec. Client prediction, agent-client walks and
+/// the server's authoritative movement simulation must all agree on this.
+pub const PLAYER_MOVE_SPEED: f32 = 3.0;
+
 /// Axis-aligned rectangular zone where monsters must not spawn (e.g. towns).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

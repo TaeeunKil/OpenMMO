@@ -1,9 +1,33 @@
 use crate::auth::CharacterSaveData;
 use crate::types::{CharacterAttributes, Player, PlayerId, Position, ServerMessage};
 use crate::world_config::world_config;
+use onlinerpg_shared::{shortest_world_delta_x, wrap_world_x, PLAYER_MOVE_SPEED};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+/// Headroom over walk speed so the sim absorbs network jitter and catches up.
+const MOVE_SPEED_SLACK: f32 = 1.15;
+/// Longest accepted move target; the farthest in-view click is ~42m.
+const MAX_MOVE_TARGET_DISTANCE: f32 = 60.0;
+
+/// Client-requested destination the server walks the player toward at capped
+/// speed. Replaced wholesale by each new PlayerMove.
+pub(super) struct MoveIntent {
+    target: Position,
+    rotation: f32,
+    floor_level: i8,
+}
+
+impl MoveIntent {
+    fn matches(&self, target: &Position, rotation: f32, floor_level: i8) -> bool {
+        self.target.x == target.x
+            && self.target.y == target.y
+            && self.target.z == target.z
+            && self.rotation == rotation
+            && self.floor_level == floor_level
+    }
+}
 
 fn build_save_data(player: &Player, character_id: i64, xp: u64, gold: i64) -> CharacterSaveData {
     CharacterSaveData {
@@ -242,6 +266,7 @@ impl super::GameState {
     }
 
     pub async fn remove_player(&self, player_id: &PlayerId) {
+        self.movement_intents.write().await.remove(player_id);
         // A player disconnecting inside a dungeon leaves its floor first,
         // so its monsters get reassigned (or despawned) instead of being
         // dropped by remove_monsters_by_owner below.
@@ -305,20 +330,32 @@ impl super::GameState {
         }
     }
 
+    /// Handle a client PlayerMove. The client sends destinations (waypoints),
+    /// so the position becomes a MoveIntent that `tick_player_movement` walks
+    /// toward; trusted (admin) connections apply immediately.
     pub async fn update_player_position(
         &self,
         player_id: &PlayerId,
         mut new_position: Position,
         new_rotation: f32,
         floor_level: i8,
+        trusted: bool,
     ) {
-        new_position.x = onlinerpg_shared::wrap_world_x(new_position.x);
+        if !(new_position.x.is_finite()
+            && new_position.y.is_finite()
+            && new_position.z.is_finite()
+            && new_rotation.is_finite())
+        {
+            warn!("Rejected non-finite move from player {}", player_id);
+            return;
+        }
+        new_position.x = wrap_world_x(new_position.x);
         // Dungeon floors (negative) are validated against the entrance
         // registry and the floor's expected world Y before being stored.
-        let current_floor = {
+        let (current_floor, current_position) = {
             let players = self.players.read().await;
             match players.get(player_id) {
-                Some(p) => p.floor_level,
+                Some(p) => (p.floor_level, p.position),
                 None => {
                     warn!("Attempted to move non-existent player: {}", player_id);
                     return;
@@ -332,28 +369,183 @@ impl super::GameState {
             floor_level
         };
 
-        let (old_position, moved_player) = {
-            let mut players = self.players.write().await;
+        if trusted {
+            self.apply_player_position(
+                player_id,
+                new_position,
+                new_rotation,
+                floor_level,
+                ServerMessage::PlayerMoved {
+                    player_id: player_id.clone(),
+                    position: new_position,
+                    rotation: new_rotation,
+                    floor_level,
+                },
+            )
+            .await;
+            return;
+        }
 
+        let dist_sq = current_position.dist_xz_sq(&new_position);
+        if dist_sq > MAX_MOVE_TARGET_DISTANCE * MAX_MOVE_TARGET_DISTANCE {
+            warn!(
+                "Rejected move target {:.0}m away from player {}",
+                dist_sq.sqrt(),
+                player_id
+            );
+            return;
+        }
+
+        self.movement_intents.write().await.insert(
+            player_id.clone(),
+            MoveIntent {
+                target: new_position,
+                rotation: new_rotation,
+                floor_level,
+            },
+        );
+    }
+
+    /// Advance every pending MoveIntent by `dt` seconds of walking and
+    /// broadcast the results. Finished intents are dropped.
+    pub async fn tick_player_movement(&self, dt: f32) {
+        let intents: Vec<(PlayerId, Position, f32, i8)> = {
+            let intents = self.movement_intents.read().await;
+            intents
+                .iter()
+                .map(|(id, i)| (id.clone(), i.target, i.rotation, i.floor_level))
+                .collect()
+        };
+        if intents.is_empty() {
+            return;
+        }
+
+        let max_step = PLAYER_MOVE_SPEED * MOVE_SPEED_SLACK * dt.max(0.0);
+        let mut moved: Vec<(&PlayerId, Position, i8, Player)> = Vec::new();
+        let mut finished: Vec<&(PlayerId, Position, f32, i8)> = Vec::new();
+        {
+            let mut players = self.players.write().await;
+            for entry in &intents {
+                let (player_id, target, rotation, target_floor) = entry;
+                let Some(player) = players.get_mut(player_id) else {
+                    finished.push(entry);
+                    continue;
+                };
+                // Backstop: combat clears the intent on death.
+                if player.health == 0 {
+                    finished.push(entry);
+                    continue;
+                }
+
+                let old_position = player.position;
+                let old_floor = player.floor_level;
+                if old_position.x == target.x
+                    && old_position.y == target.y
+                    && old_position.z == target.z
+                    && old_floor == *target_floor
+                    && player.rotation == *rotation
+                {
+                    finished.push(entry);
+                    continue;
+                }
+
+                let dx = shortest_world_delta_x(old_position.x, target.x);
+                let dz = target.z - old_position.z;
+                let dist = (dx * dx + dz * dz).sqrt();
+                if dist <= max_step {
+                    player.position = *target;
+                    player.floor_level = *target_floor;
+                } else {
+                    let t = max_step / dist;
+                    player.position = Position {
+                        x: wrap_world_x(old_position.x + dx * t),
+                        y: old_position.y + (target.y - old_position.y) * t,
+                        z: old_position.z + dz * t,
+                    };
+                }
+                player.rotation = *rotation;
+                moved.push((player_id, old_position, old_floor, player.clone()));
+            }
+        }
+
+        if !finished.is_empty() {
+            let mut intents_map = self.movement_intents.write().await;
+            for (player_id, target, rotation, floor_level) in finished {
+                // Keep intents that were replaced since the snapshot.
+                if intents_map
+                    .get(player_id)
+                    .is_some_and(|i| i.matches(target, *rotation, *floor_level))
+                {
+                    intents_map.remove(player_id);
+                }
+            }
+        }
+
+        for (player_id, old_position, old_floor, moved_player) in moved {
+            let update_msg = ServerMessage::PlayerMoved {
+                player_id: player_id.clone(),
+                position: moved_player.position,
+                rotation: moved_player.rotation,
+                floor_level: moved_player.floor_level,
+            };
+            self.finish_position_update(
+                player_id,
+                old_position,
+                old_floor,
+                moved_player,
+                update_msg,
+            )
+            .await;
+        }
+    }
+
+    /// Store a position immediately (trusted server-side path) and run the
+    /// shared bookkeeping/fanout.
+    async fn apply_player_position(
+        &self,
+        player_id: &PlayerId,
+        new_position: Position,
+        new_rotation: f32,
+        floor_level: i8,
+        update_msg: ServerMessage,
+    ) {
+        self.movement_intents.write().await.remove(player_id);
+        let (old_position, old_floor, moved_player) = {
+            let mut players = self.players.write().await;
             let Some(player) = players.get_mut(player_id) else {
                 warn!("Attempted to move non-existent player: {}", player_id);
                 return;
             };
-
             let old_position = player.position;
+            let old_floor = player.floor_level;
             player.position = new_position;
             player.rotation = new_rotation;
             player.floor_level = floor_level;
-            (old_position, player.clone())
+            (old_position, old_floor, player.clone())
         };
+        self.finish_position_update(player_id, old_position, old_floor, moved_player, update_msg)
+            .await;
+    }
 
+    /// Shared bookkeeping after a position write: spatial cell, dirty flag,
+    /// floor-change handling and AOI fanout of `update_msg`.
+    async fn finish_position_update(
+        &self,
+        player_id: &PlayerId,
+        old_position: Position,
+        old_floor: i8,
+        moved_player: Player,
+        update_msg: ServerMessage,
+    ) {
+        let new_position = moved_player.position;
+        let floor_level = moved_player.floor_level;
         self.move_player_spatial_cell(player_id, &old_position, &new_position)
             .await;
         self.mark_dirty(player_id).await;
-        if current_floor != floor_level {
+        if old_floor != floor_level {
             self.handle_player_floor_change(
                 player_id,
-                current_floor,
+                old_floor,
                 floor_level,
                 &old_position,
                 &new_position,
@@ -363,14 +555,9 @@ impl super::GameState {
         self.fanout_player_position_update(
             player_id,
             &old_position,
-            current_floor,
+            old_floor,
             &moved_player,
-            ServerMessage::PlayerMoved {
-                player_id: player_id.clone(),
-                position: new_position,
-                rotation: new_rotation,
-                floor_level,
-            },
+            update_msg,
         )
         .await;
     }
@@ -382,55 +569,24 @@ impl super::GameState {
         new_rotation: f32,
         new_floor_level: i8,
     ) {
-        new_position.x = onlinerpg_shared::wrap_world_x(new_position.x);
-        let moved = {
-            let mut players = self.players.write().await;
-            if let Some(player) = players.get_mut(player_id) {
-                let old_position = player.position;
-                let old_floor = player.floor_level;
-                player.position = new_position;
-                player.rotation = new_rotation;
-                player.floor_level = new_floor_level;
-                Some((old_position, old_floor, player.clone()))
-            } else {
-                None
-            }
-        };
-
-        if let Some((old_position, old_floor, moved_player)) = moved {
-            self.move_player_spatial_cell(player_id, &old_position, &new_position)
-                .await;
-            self.mark_dirty(player_id).await;
-            if old_floor != new_floor_level {
-                // Teleports can jump straight into/out of dungeon floors
-                // (debug teleport, world map) — run the same occupancy and
-                // monster bookkeeping as walking the stairs.
-                self.handle_player_floor_change(
-                    player_id,
-                    old_floor,
-                    new_floor_level,
-                    &old_position,
-                    &new_position,
-                )
-                .await;
-            }
-            self.fanout_player_position_update(
-                player_id,
-                &old_position,
-                old_floor,
-                &moved_player,
-                ServerMessage::PlayerTeleported {
-                    player_id: player_id.clone(),
-                    position: new_position,
-                    rotation: new_rotation,
-                    floor_level: new_floor_level,
-                },
-            )
-            .await;
-        }
+        new_position.x = wrap_world_x(new_position.x);
+        self.apply_player_position(
+            player_id,
+            new_position,
+            new_rotation,
+            new_floor_level,
+            ServerMessage::PlayerTeleported {
+                player_id: player_id.clone(),
+                position: new_position,
+                rotation: new_rotation,
+                floor_level: new_floor_level,
+            },
+        )
+        .await;
     }
 
     pub async fn respawn_player(&self, player_id: &PlayerId) {
+        self.movement_intents.write().await.remove(player_id);
         let respawned_player = {
             let mut players = self.players.write().await;
             if let Some(player) = players.get_mut(player_id) {
@@ -458,30 +614,11 @@ impl super::GameState {
 
         if let Some((old_floor, old_position, player)) = respawned_player {
             info!("Player {} ({}) respawned", player.name, player.id);
-            self.move_player_spatial_cell(player_id, &old_position, &player.position)
+            let update_msg = ServerMessage::PlayerRespawned {
+                player: player.clone(),
+            };
+            self.finish_position_update(player_id, old_position, old_floor, player, update_msg)
                 .await;
-            self.mark_dirty(player_id).await;
-            if old_floor < 0 {
-                // Dying in a dungeon leaves its floor (monster handover).
-                self.handle_player_floor_change(
-                    player_id,
-                    old_floor,
-                    0,
-                    &old_position,
-                    &player.position,
-                )
-                .await;
-            }
-            self.fanout_player_position_update(
-                player_id,
-                &old_position,
-                old_floor,
-                &player,
-                ServerMessage::PlayerRespawned {
-                    player: player.clone(),
-                },
-            )
-            .await;
         } else {
             warn!("Attempted to respawn non-existent player: {}", player_id);
         }

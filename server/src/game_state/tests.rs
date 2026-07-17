@@ -273,7 +273,7 @@ async fn movement_into_aoi_sends_existing_monsters_and_ground_items() {
     let game_state = make_test_game_state("movement_world_entity_aoi");
     let player_id = "walker".to_string();
     let entity_position = Position {
-        x: 100.0,
+        x: 50.0,
         y: 0.0,
         z: 0.0,
     };
@@ -309,8 +309,9 @@ async fn movement_into_aoi_sends_existing_monsters_and_ground_items() {
     }
 
     game_state
-        .update_player_position(&player_id, entity_position, 0.0, 0)
+        .update_player_position(&player_id, entity_position, 0.0, 0, false)
         .await;
+    game_state.tick_player_movement(60.0).await;
 
     match direct_rx.try_recv() {
         Ok(ServerMessage::MonsterSpawned { monster }) => {
@@ -366,8 +367,10 @@ async fn player_movement_wraps_across_east_world_edge() {
             },
             0.5,
             0,
+            false,
         )
         .await;
+    game_state.tick_player_movement(60.0).await;
 
     let players = game_state.get_all_players().await;
     let wrapped = &players[&player_id];
@@ -379,6 +382,109 @@ async fn player_movement_wraps_across_east_world_edge() {
         }
         other => panic!("Expected wrapped self PlayerMoved, got {other:?}"),
     }
+}
+
+async fn player_x(game_state: &GameState, player_id: &str) -> f32 {
+    game_state.get_all_players().await[player_id].position.x
+}
+
+fn pos(x: f32) -> Position {
+    Position { x, y: 0.0, z: 0.0 }
+}
+
+#[tokio::test]
+async fn server_caps_player_movement_speed() {
+    let game_state = make_test_game_state("movement_speed_cap");
+    let player_id = "runner".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(50.0), 0.0, 0, false)
+        .await;
+
+    assert_eq!(player_x(&game_state, &player_id).await, 0.0);
+
+    game_state.tick_player_movement(1.0).await;
+    let after_one_second = player_x(&game_state, &player_id).await;
+    assert!(after_one_second > 2.0 && after_one_second < 4.0);
+
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 50.0);
+}
+
+#[tokio::test]
+async fn non_finite_move_is_rejected() {
+    let game_state = make_test_game_state("movement_nan_reject");
+    let player_id = "glitcher".to_string();
+    game_state
+        .add_player(make_player(&player_id, 1.0, 1.0))
+        .await;
+
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        game_state
+            .update_player_position(&player_id, pos(bad), 0.0, 0, false)
+            .await;
+    }
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 1.0);
+}
+
+#[tokio::test]
+async fn far_move_target_is_rejected() {
+    let game_state = make_test_game_state("movement_far_reject");
+    let player_id = "warper".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(100.0), 0.0, 0, false)
+        .await;
+    game_state.tick_player_movement(600.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 0.0);
+}
+
+#[tokio::test]
+async fn admin_move_applies_immediately() {
+    let game_state = make_test_game_state("movement_admin_bypass");
+    let player_id = "gm".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(100.0), 0.0, 0, true)
+        .await;
+    assert_eq!(player_x(&game_state, &player_id).await, 100.0);
+}
+
+#[tokio::test]
+async fn teleport_clears_pending_move_intent() {
+    let game_state = make_test_game_state("movement_teleport_clears");
+    let player_id = "traveler".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(50.0), 0.0, 0, false)
+        .await;
+    game_state
+        .teleport_player(
+            &player_id,
+            Position {
+                x: 5.0,
+                y: 0.0,
+                z: 5.0,
+            },
+            0.0,
+            0,
+        )
+        .await;
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 5.0);
 }
 
 #[tokio::test]

@@ -96,6 +96,7 @@ pub(crate) struct ServerGroundItem {
 #[derive(Clone)]
 pub struct GameState {
     players: Arc<RwLock<HashMap<PlayerId, Player>>>,
+    movement_intents: Arc<RwLock<HashMap<PlayerId, player::MoveIntent>>>,
     player_spatial_cells: Arc<RwLock<HashMap<SpatialCell, HashSet<PlayerId>>>>,
     monsters: Arc<RwLock<HashMap<String, crate::types::Monster>>>,
     broadcast_tx: GameStateSender,
@@ -162,6 +163,7 @@ impl GameState {
 
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
+            movement_intents: Arc::new(RwLock::new(HashMap::new())),
             player_spatial_cells: Arc::new(RwLock::new(HashMap::new())),
             monsters: Arc::new(RwLock::new(HashMap::new())),
             broadcast_tx,

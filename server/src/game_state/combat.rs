@@ -522,6 +522,7 @@ impl super::GameState {
 
         if did_die {
             let dead_player_id = target_player_id.to_string();
+            self.movement_intents.write().await.remove(&dead_player_id);
             self.apply_player_death_penalty(&dead_player_id).await;
             if let Some((target_position, target_floor)) = target_loc {
                 self.send_direct_message_to_players_within_position(

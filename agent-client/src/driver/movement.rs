@@ -19,8 +19,7 @@ use crate::state::SharedState;
 
 use super::prompt::resolve_active_schedule;
 
-/// Character movement speed in units/sec (matches client DEFAULT_MOVEMENT_CONFIG.maxSpeed).
-pub(super) const MOVE_SPEED: f32 = 3.0;
+pub(super) const MOVE_SPEED: f32 = onlinerpg_shared::PLAYER_MOVE_SPEED;
 
 /// Maximum distance per move step (units). Longer segments are subdivided
 /// so the NPC walks at MOVE_SPEED instead of teleporting.
