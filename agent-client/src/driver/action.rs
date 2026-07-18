@@ -175,6 +175,7 @@ pub(super) fn action_to_command(
                 },
                 rotation,
                 floor_level: 0,
+                append: false,
             })
         }
         AgentAction::Respawn => Some(ClientMessage::RequestRespawn),

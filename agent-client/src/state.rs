@@ -302,6 +302,7 @@ impl SharedState {
                     position,
                     rotation,
                     floor_level: self.self_floor_level as i8,
+                    append: false,
                 }
             }
             ClientMessage::RequestSpawnMonster {
@@ -356,6 +357,7 @@ impl SharedState {
             position: pos,
             rotation,
             floor_level: 0,
+            append: false,
         })
         .await
     }
@@ -798,6 +800,7 @@ impl SharedState {
             position: self_player.position,
             rotation: to_target.rotation(),
             floor_level: self.self_floor_level as i8,
+            append: false,
         })
     }
 

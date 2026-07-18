@@ -346,7 +346,7 @@ async fn movement_into_aoi_sends_existing_monsters_and_ground_items() {
     }
 
     game_state
-        .update_player_position(&player_id, entity_position, 0.0, 0, false, false)
+        .update_player_position(&player_id, entity_position, 0.0, 0, false, false, false)
         .await;
     game_state.tick_player_movement(60.0).await;
 
@@ -406,6 +406,7 @@ async fn player_movement_wraps_across_east_world_edge() {
             0,
             false,
             false,
+            false,
         )
         .await;
     game_state.tick_player_movement(60.0).await;
@@ -451,6 +452,7 @@ async fn seam_crossing_movement_checks_destination_edge_collision() {
             0,
             false,
             false,
+            false,
         )
         .await;
     game_state.tick_player_movement(60.0).await;
@@ -478,7 +480,7 @@ async fn server_caps_player_movement_speed() {
         .await;
 
     game_state
-        .update_player_position(&player_id, pos(50.0), 0.0, 0, false, false)
+        .update_player_position(&player_id, pos(50.0), 0.0, 0, false, false, false)
         .await;
 
     assert_eq!(player_x(&game_state, &player_id).await, 0.0);
@@ -492,6 +494,103 @@ async fn server_caps_player_movement_speed() {
 }
 
 #[tokio::test]
+async fn one_tick_budget_spans_queued_legs() {
+    let game_state = make_test_game_state("movement_queue_budget");
+    let player_id = "pathwalker".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(1.0), 0.0, 0, false, false, false)
+        .await;
+    for x in [2.0, 3.0] {
+        game_state
+            .update_player_position(&player_id, pos(x), 0.0, 0, false, false, true)
+            .await;
+    }
+
+    // Budget ≈ 1.98m: leg 1 consumed whole, leg 2 partially — the cap holds
+    // across legs, not per leg.
+    game_state.tick_player_movement(0.5).await;
+    let mid = player_x(&game_state, &player_id).await;
+    assert!(mid > 1.5 && mid < 2.1, "mid was {mid}");
+
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 3.0);
+}
+
+#[tokio::test]
+async fn append_distance_guard_measures_from_queue_tail() {
+    let game_state = make_test_game_state("movement_queue_tail_guard");
+    let player_id = "longhauler".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(50.0), 0.0, 0, false, false, false)
+        .await;
+    // 100 is >60m from the player but only 50m from the queue tail: accepted.
+    game_state
+        .update_player_position(&player_id, pos(100.0), 0.0, 0, false, false, true)
+        .await;
+    // 70m from the new tail: rejected.
+    game_state
+        .update_player_position(&player_id, pos(170.0), 0.0, 0, false, false, true)
+        .await;
+
+    game_state.tick_player_movement(600.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 100.0);
+}
+
+#[tokio::test]
+async fn replace_drops_queued_waypoints() {
+    let game_state = make_test_game_state("movement_queue_replace");
+    let player_id = "rerouter".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(10.0), 0.0, 0, false, false, false)
+        .await;
+    game_state
+        .update_player_position(&player_id, pos(20.0), 0.0, 0, false, false, true)
+        .await;
+    game_state
+        .update_player_position(&player_id, pos(5.0), 0.0, 0, false, false, false)
+        .await;
+
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 5.0);
+}
+
+#[tokio::test]
+async fn full_waypoint_queue_drops_oldest_leg() {
+    let game_state = make_test_game_state("movement_queue_cap");
+    let player_id = "spammer".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.0, 0.0))
+        .await;
+
+    game_state
+        .update_player_position(&player_id, pos(1.0), 0.0, 0, false, false, false)
+        .await;
+    for i in 2..=40 {
+        game_state
+            .update_player_position(&player_id, pos(i as f32), 0.0, 0, false, false, true)
+            .await;
+    }
+
+    // Overflow evicts from the front, so the tail survives and the sim still
+    // reaches the client's final position (a reject-newest policy would strand
+    // the player at 32).
+    game_state.tick_player_movement(600.0).await;
+    assert_eq!(player_x(&game_state, &player_id).await, 40.0);
+}
+
+#[tokio::test]
 async fn non_finite_move_is_rejected() {
     let game_state = make_test_game_state("movement_nan_reject");
     let player_id = "glitcher".to_string();
@@ -501,7 +600,7 @@ async fn non_finite_move_is_rejected() {
 
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         game_state
-            .update_player_position(&player_id, pos(bad), 0.0, 0, false, false)
+            .update_player_position(&player_id, pos(bad), 0.0, 0, false, false, false)
             .await;
     }
     game_state.tick_player_movement(60.0).await;
@@ -517,7 +616,7 @@ async fn far_move_target_is_rejected() {
         .await;
 
     game_state
-        .update_player_position(&player_id, pos(100.0), 0.0, 0, false, false)
+        .update_player_position(&player_id, pos(100.0), 0.0, 0, false, false, false)
         .await;
     game_state.tick_player_movement(600.0).await;
     assert_eq!(player_x(&game_state, &player_id).await, 0.0);
@@ -532,7 +631,7 @@ async fn admin_move_applies_immediately() {
         .await;
 
     game_state
-        .update_player_position(&player_id, pos(100.0), 0.0, 0, true, false)
+        .update_player_position(&player_id, pos(100.0), 0.0, 0, true, false, false)
         .await;
     assert_eq!(player_x(&game_state, &player_id).await, 100.0);
 }
@@ -546,7 +645,7 @@ async fn teleport_clears_pending_move_intent() {
         .await;
 
     game_state
-        .update_player_position(&player_id, pos(50.0), 0.0, 0, false, false)
+        .update_player_position(&player_id, pos(50.0), 0.0, 0, false, false, false)
         .await;
     game_state
         .teleport_player(
@@ -1618,6 +1717,7 @@ async fn simulated_movement_is_blocked_by_solid_furniture() {
             0,
             false,
             false,
+            false,
         )
         .await;
     game_state.tick_player_movement(60.0).await;
@@ -1636,10 +1736,74 @@ async fn simulated_movement_is_blocked_by_solid_furniture() {
             0,
             false,
             false,
+            false,
         )
         .await;
     game_state.tick_player_movement(60.0).await;
     assert_eq!(player_xz(&game_state, &player_id).await, (3.5, 4.5));
+}
+
+#[tokio::test]
+async fn queued_waypoints_route_around_furniture() {
+    let game_state = make_test_game_state("movement_queue_around");
+    let player_id = "detourist".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.5, 4.5))
+        .await;
+    game_state.sync_region_furniture(0, 0, &[table_placement(0.5, 5.5)]);
+
+    // The client's path around the sealed cell, leg by leg. A single replace
+    // to the final target would beeline through the table and block
+    // (`simulated_movement_is_blocked_by_solid_furniture`).
+    let legs = [(1.5, 4.5, false), (1.5, 6.5, true), (0.5, 6.5, true)];
+    for (x, z, append) in legs {
+        game_state
+            .update_player_position(
+                &player_id,
+                Position { x, y: 0.0, z },
+                0.0,
+                0,
+                false,
+                false,
+                append,
+            )
+            .await;
+    }
+
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_xz(&game_state, &player_id).await, (0.5, 6.5));
+}
+
+#[tokio::test]
+async fn blocked_leg_drops_remaining_queue() {
+    let game_state = make_test_game_state("movement_queue_blocked_drop");
+    let player_id = "stopper".to_string();
+    game_state
+        .add_player(make_player(&player_id, 0.5, 4.5))
+        .await;
+    game_state.sync_region_furniture(0, 0, &[table_placement(0.5, 5.5)]);
+
+    // Second leg dives into the sealed cell; the third would be clear again,
+    // but a blocked queue must not keep walking later legs.
+    let legs = [(1.5, 4.5, false), (0.5, 5.5, true), (0.5, 6.5, true)];
+    for (x, z, append) in legs {
+        game_state
+            .update_player_position(
+                &player_id,
+                Position { x, y: 0.0, z },
+                0.0,
+                0,
+                false,
+                false,
+                append,
+            )
+            .await;
+    }
+
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_xz(&game_state, &player_id).await, (1.5, 4.5));
+    game_state.tick_player_movement(60.0).await;
+    assert_eq!(player_xz(&game_state, &player_id).await, (1.5, 4.5));
 }
 
 #[tokio::test]
@@ -1663,6 +1827,7 @@ async fn npc_movement_is_exempt_from_collision() {
             0,
             false,
             true,
+            false,
         )
         .await;
     game_state.tick_player_movement(60.0).await;
@@ -1690,6 +1855,7 @@ async fn furniture_removal_reopens_blocked_cells() {
             },
             0.0,
             0,
+            false,
             false,
             false,
         )

@@ -150,6 +150,7 @@ async fn execute_schedule_move(state: &Arc<Mutex<SharedState>>, entry: &Schedule
             position: onlinerpg_shared::Position { x, y, z },
             rotation: rot_rad,
             floor_level: entry.floor_level as i8,
+            append: false,
         };
         if let Err(e) = s.send_command(cmd).await {
             error!("Failed to send schedule move: {e}");
@@ -214,6 +215,7 @@ pub(super) async fn execute_move(
                     },
                     rotation: to_wp.rotation(),
                     floor_level: wp.floor as i8,
+                    append: false,
                 };
                 s.self_floor_level = wp.floor;
                 if let Err(e) = s.send_command(cmd).await {

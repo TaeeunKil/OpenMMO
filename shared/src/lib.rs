@@ -51,6 +51,7 @@ mod tests {
             },
             rotation: 1.5,
             floor_level: 1,
+            append: false,
         };
         let bytes = serialize_client_msg(&msg).unwrap();
         let decoded = deserialize_client_msg(&bytes).unwrap();
@@ -59,6 +60,7 @@ mod tests {
                 position,
                 rotation,
                 floor_level,
+                ..
             } => {
                 assert_eq!(position.x, 1.0);
                 assert_eq!(position.y, 2.0);

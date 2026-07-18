@@ -78,6 +78,12 @@ pub enum ClientMessage {
         rotation: f32,
         #[serde(default)]
         floor_level: i8,
+        /// Append to the server's waypoint queue instead of replacing it.
+        /// Path-following sends use this so the server walks the same
+        /// client-validated polyline; fresh paths (click, keyboard, combat)
+        /// replace.
+        #[serde(default)]
+        append: bool,
     },
     ChatMessage {
         message: String,

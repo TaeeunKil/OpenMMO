@@ -2,7 +2,7 @@ use crate::auth::{AuthError, AuthService, CharacterSaveData};
 use crate::types::{CharacterAttributes, Player, PlayerId, Position, ServerMessage};
 use crate::world_config::world_config;
 use onlinerpg_shared::{shortest_world_delta_x, wrap_world_x, PLAYER_MOVE_SPEED};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -11,8 +11,11 @@ const MOVE_SPEED_SLACK: f32 = 1.15;
 /// Longest accepted move target; the farthest in-view click is ~42m.
 const MAX_MOVE_TARGET_DISTANCE: f32 = 60.0;
 
+/// Most queued waypoints per player; legit smoothed paths stay well under.
+const MAX_QUEUED_WAYPOINTS: usize = 32;
+
 /// Client-requested destination the server walks the player toward at capped
-/// speed. Replaced wholesale by each new PlayerMove.
+/// speed.
 #[derive(Clone)]
 pub(super) struct MoveIntent {
     target: Position,
@@ -23,15 +26,15 @@ pub(super) struct MoveIntent {
     check_collision: bool,
 }
 
-impl PartialEq for MoveIntent {
-    fn eq(&self, other: &Self) -> bool {
-        self.target.x == other.target.x
-            && self.target.y == other.target.y
-            && self.target.z == other.target.z
-            && self.rotation == other.rotation
-            && self.floor_level == other.floor_level
-            && self.check_collision == other.check_collision
-    }
+/// FIFO of client-validated legs. `append: false` PlayerMoves replace the
+/// whole queue; `append: true` extends it so the server walks the client's
+/// polyline instead of beelining (and corner-cutting) to the newest target.
+#[derive(Default)]
+pub(super) struct MoveQueue {
+    /// Bumped on every replace; an in-flight tick only pops waypoints it
+    /// consumed when the generation still matches.
+    generation: u64,
+    waypoints: VecDeque<MoveIntent>,
 }
 
 /// Run a blocking DB save on the blocking pool and await it, logging a join
@@ -386,6 +389,7 @@ impl super::GameState {
     /// Handle a client PlayerMove. The client sends destinations (waypoints),
     /// so the position becomes a MoveIntent that `tick_player_movement` walks
     /// toward; trusted (admin) connections apply immediately.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_player_position(
         &self,
         player_id: &PlayerId,
@@ -394,6 +398,7 @@ impl super::GameState {
         floor_level: i8,
         trusted: bool,
         is_npc: bool,
+        append: bool,
     ) {
         if !(new_position.is_finite() && new_rotation.is_finite()) {
             warn!("Rejected non-finite move from player {}", player_id);
@@ -436,7 +441,19 @@ impl super::GameState {
             return;
         }
 
-        let dist_sq = current_position.dist_xz_sq(&new_position);
+        let mut queues = self.movement_intents.write().await;
+        // Appended legs chain off the queue tail, so the distance guard must
+        // measure the new leg, not the whole path from the current position.
+        let leg_start = if append {
+            queues
+                .get(player_id)
+                .and_then(|q| q.waypoints.back())
+                .map(|w| w.target)
+                .unwrap_or(current_position)
+        } else {
+            current_position
+        };
+        let dist_sq = leg_start.dist_xz_sq(&new_position);
         if dist_sq > MAX_MOVE_TARGET_DISTANCE * MAX_MOVE_TARGET_DISTANCE {
             warn!(
                 "Rejected move target {:.0}m away from player {}",
@@ -445,120 +462,163 @@ impl super::GameState {
             );
             return;
         }
-
-        self.movement_intents.write().await.insert(
-            player_id.clone(),
-            MoveIntent {
-                target: new_position,
-                rotation: new_rotation,
-                floor_level,
-                check_collision: !is_npc,
-            },
-        );
+        let queue = queues.entry(player_id.clone()).or_default();
+        if append && queue.waypoints.len() >= MAX_QUEUED_WAYPOINTS {
+            // Drop the oldest leg, not the newest: losing path fidelity in the
+            // middle beats never reaching where the client actually is. The
+            // resulting current-position→new-head beeline is the same risk as
+            // a replace and is still collision-checked while walking.
+            queue.waypoints.pop_front();
+            warn!(
+                "Waypoint queue full for player {}, dropped oldest",
+                player_id
+            );
+        }
+        if !append {
+            queue.generation = queue.generation.wrapping_add(1);
+            queue.waypoints.clear();
+        }
+        queue.waypoints.push_back(MoveIntent {
+            target: new_position,
+            rotation: new_rotation,
+            floor_level,
+            check_collision: !is_npc,
+        });
     }
 
-    /// Advance every pending MoveIntent by `dt` seconds of walking and
-    /// broadcast the results. Finished intents are dropped.
+    /// Advance every pending move queue by `dt` seconds of walking and
+    /// broadcast the results. A tick's budget can span several short legs;
+    /// consumed waypoints are popped, finished queues dropped.
     pub async fn tick_player_movement(&self, dt: f32) {
-        let intents: Vec<(PlayerId, MoveIntent)> = {
-            let intents = self.movement_intents.read().await;
-            intents
+        let queues: Vec<(PlayerId, u64, VecDeque<MoveIntent>)> = {
+            let queues = self.movement_intents.read().await;
+            queues
                 .iter()
-                .map(|(id, intent)| (id.clone(), intent.clone()))
+                .filter(|(_, q)| !q.waypoints.is_empty())
+                .map(|(id, q)| (id.clone(), q.generation, q.waypoints.clone()))
                 .collect()
         };
-        if intents.is_empty() {
+        if queues.is_empty() {
             return;
         }
 
         let max_step = PLAYER_MOVE_SPEED * MOVE_SPEED_SLACK * dt.max(0.0);
         let mut moved: Vec<(&PlayerId, Position, i8, Player)> = Vec::new();
-        let mut finished: Vec<&(PlayerId, MoveIntent)> = Vec::new();
+        // (player, generation, waypoints consumed, drop the rest)
+        let mut outcomes: Vec<(&PlayerId, u64, usize, bool)> = Vec::new();
         {
             let mut players = self.players.write().await;
             let cache = self.passability_read();
-            for entry in &intents {
-                let (player_id, intent) = entry;
-                let target = &intent.target;
+            for (player_id, generation, waypoints) in &queues {
                 let Some(player) = players.get_mut(player_id) else {
-                    finished.push(entry);
+                    outcomes.push((player_id, *generation, 0, true));
                     continue;
                 };
-                // Backstop: combat clears the intent on death.
+                // Backstop: combat clears the queue on death.
                 if player.health == 0 {
-                    finished.push(entry);
+                    outcomes.push((player_id, *generation, 0, true));
                     continue;
                 }
 
                 let old_position = player.position;
                 let old_floor = player.floor_level;
-                if old_position.x == target.x
-                    && old_position.y == target.y
-                    && old_position.z == target.z
-                    && old_floor == intent.floor_level
-                    && player.rotation == intent.rotation
-                {
-                    finished.push(entry);
-                    continue;
-                }
-
-                let dx = shortest_world_delta_x(old_position.x, target.x);
-                let dz = target.z - old_position.z;
-                let dist = (dx * dx + dz * dz).sqrt();
-                let snap = dist <= max_step;
-                // Step in unwrapped X so a seam-crossing move stays a short
-                // local sweep for the collision query.
-                let (step_x, step_y, step_z) = if snap {
-                    (old_position.x + dx, target.y, target.z)
-                } else {
-                    let t = max_step / dist;
-                    (
-                        old_position.x + dx * t,
-                        old_position.y + (target.y - old_position.y) * t,
-                        old_position.z + dz * t,
-                    )
-                };
-                // Edge-crossing query also used by the client's continuous
-                // mover (at the mover's current Y). A blocked step stops the
-                // player at the wall and drops the intent.
-                if intent.check_collision
-                    && super::passability::is_wrapped_movement_blocked(
-                        &cache,
-                        old_position.x,
-                        old_position.z,
-                        step_x,
-                        step_z,
-                        old_position.y,
-                    )
-                {
-                    warn!(
-                        "Blocked move for player {}: ({:.1},{:.1}) -> ({:.1},{:.1}) y={:.1}",
-                        player_id, old_position.x, old_position.z, step_x, step_z, old_position.y
-                    );
-                    finished.push(entry);
-                    continue;
-                }
-                if snap {
-                    player.position = *target;
-                    player.floor_level = intent.floor_level;
-                } else {
-                    player.position = Position {
-                        x: wrap_world_x(step_x),
-                        y: step_y,
-                        z: step_z,
+                let old_rotation = player.rotation;
+                let mut budget = max_step;
+                let mut consumed = 0usize;
+                let mut blocked = false;
+                for intent in waypoints {
+                    let target = &intent.target;
+                    let dx = shortest_world_delta_x(player.position.x, target.x);
+                    let dz = target.z - player.position.z;
+                    let dist = (dx * dx + dz * dz).sqrt();
+                    let snap = dist <= budget;
+                    // Step in unwrapped X so a seam-crossing move stays a
+                    // short local sweep for the collision query.
+                    let (step_x, step_y, step_z) = if snap {
+                        (player.position.x + dx, target.y, target.z)
+                    } else {
+                        let t = budget / dist;
+                        (
+                            player.position.x + dx * t,
+                            player.position.y + (target.y - player.position.y) * t,
+                            player.position.z + dz * t,
+                        )
                     };
+                    // Edge-crossing subset of the client's continuous-mover
+                    // check (no body radius, at the mover's current Y). A
+                    // blocked step stops the player and drops the queue.
+                    if intent.check_collision
+                        && super::passability::is_wrapped_movement_blocked(
+                            &cache,
+                            player.position.x,
+                            player.position.z,
+                            step_x,
+                            step_z,
+                            player.position.y,
+                        )
+                    {
+                        warn!(
+                            "Blocked move for player {}: ({:.1},{:.1}) -> ({:.1},{:.1}) y={:.1}",
+                            player_id,
+                            player.position.x,
+                            player.position.z,
+                            step_x,
+                            step_z,
+                            player.position.y
+                        );
+                        blocked = true;
+                        break;
+                    }
+                    player.rotation = intent.rotation;
+                    if snap {
+                        player.position = *target;
+                        player.floor_level = intent.floor_level;
+                        budget -= dist;
+                        consumed += 1;
+                    } else {
+                        player.position = Position {
+                            x: wrap_world_x(step_x),
+                            y: step_y,
+                            z: step_z,
+                        };
+                        break;
+                    }
                 }
-                player.rotation = intent.rotation;
-                moved.push((player_id, old_position, old_floor, player.clone()));
+                // Steady-state mid-leg progress needs no queue mutation; only
+                // record outcomes that do, so the write-lock pass below can
+                // skip entirely on quiet ticks.
+                if consumed > 0 || blocked {
+                    outcomes.push((player_id, *generation, consumed, blocked));
+                }
+                let position_changed = player.position.x != old_position.x
+                    || player.position.y != old_position.y
+                    || player.position.z != old_position.z;
+                if position_changed
+                    || player.floor_level != old_floor
+                    || player.rotation != old_rotation
+                {
+                    moved.push((player_id, old_position, old_floor, player.clone()));
+                }
             }
         }
 
-        if !finished.is_empty() {
-            let mut intents_map = self.movement_intents.write().await;
-            for (player_id, intent) in finished {
-                // Keep intents that were replaced since the snapshot.
-                if intents_map.get(player_id) == Some(intent) {
-                    intents_map.remove(player_id);
+        if !outcomes.is_empty() {
+            let mut queues_map = self.movement_intents.write().await;
+            for (player_id, generation, consumed, drop_rest) in outcomes {
+                let Some(queue) = queues_map.get_mut(player_id) else {
+                    continue;
+                };
+                // A replace since the snapshot owns the queue now.
+                if queue.generation != generation {
+                    continue;
+                }
+                if drop_rest {
+                    queue.waypoints.clear();
+                } else {
+                    queue.waypoints.drain(..consumed.min(queue.waypoints.len()));
+                }
+                if queue.waypoints.is_empty() {
+                    queues_map.remove(player_id);
                 }
             }
         }

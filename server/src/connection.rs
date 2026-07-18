@@ -702,6 +702,7 @@ async fn handle_client_message(
             position,
             rotation,
             floor_level,
+            append,
         } => {
             if let Some(id) = &state.player_id {
                 game_state
@@ -712,6 +713,7 @@ async fn handle_client_message(
                         floor_level,
                         state.is_admin,
                         state.is_npc,
+                        append,
                     )
                     .await;
             } else {

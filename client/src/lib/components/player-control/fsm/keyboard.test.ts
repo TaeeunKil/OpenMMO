@@ -3,7 +3,10 @@ import { DEFAULT_MOVEMENT_CONFIG } from '../../../utils/movementUtils'
 import {
   applyKeyboardMovement,
   applyKeyboardMovementOutcome,
+  createKeyboardMoveSender,
+  createKeyboardTapTracker,
   runKeyboardFrame,
+  KEYBOARD_TAP_STEP,
   type KeyboardFrameActions,
   type KeyboardMovementOutcomeActions,
 } from './keyboard'
@@ -29,7 +32,7 @@ function outcomeActions(): KeyboardMovementOutcomeActions {
   }
 }
 
-function frameActions(): KeyboardFrameActions {
+function frameActions() {
   return {
     exitPickupInteraction: vi.fn(),
     exitObjectInteraction: vi.fn(),
@@ -41,7 +44,16 @@ function frameActions(): KeyboardFrameActions {
     stopMovement: vi.fn(),
     triggerJumpFeedback: vi.fn(),
     setMoved: vi.fn(),
-  }
+    requestMove: vi.fn(),
+  } satisfies KeyboardFrameActions
+}
+
+function makeTapTracker(target: { x: number; z: number } | null = null) {
+  return { frame: vi.fn(() => target) }
+}
+
+function makeMoveSender() {
+  return { step: vi.fn(), flush: vi.fn(), reset: vi.fn() }
 }
 
 const movementDeps = {
@@ -55,7 +67,7 @@ const movementDeps = {
   isMovementBlocked: () => false,
   isUphillTooSteep: () => false,
   writePlayerPosition: vi.fn(),
-  sendPlayerMove: vi.fn(),
+  tapTracker: makeTapTracker(),
 }
 
 describe('applyKeyboardMovement', () => {
@@ -138,6 +150,7 @@ describe('applyKeyboardMovementOutcome', () => {
 describe('runKeyboardFrame', () => {
   it('does nothing without a player or pressed keys', () => {
     const a = frameActions()
+    const moveSender = makeMoveSender()
 
     runKeyboardFrame({
       currentPlayer: null,
@@ -148,9 +161,11 @@ describe('runKeyboardFrame', () => {
       direction: null,
       actions: a,
       ...movementDeps,
+      moveSender,
     })
 
     expect(a.emitKeyboardPlayerState).not.toHaveBeenCalled()
+    expect(moveSender.flush).not.toHaveBeenCalled()
   })
 
   it('exits interaction and cancels click movement before applying input', () => {
@@ -165,6 +180,7 @@ describe('runKeyboardFrame', () => {
       direction: null,
       actions: a,
       ...movementDeps,
+      moveSender: makeMoveSender(),
     })
 
     expect(a.exitObjectInteraction).toHaveBeenCalledOnce()
@@ -176,6 +192,7 @@ describe('runKeyboardFrame', () => {
 
   it('marks movement and emits player state after successful movement', () => {
     const a = frameActions()
+    const moveSender = makeMoveSender()
 
     runKeyboardFrame({
       currentPlayer: { position: { x: 0, y: 0, z: 0 } },
@@ -186,18 +203,22 @@ describe('runKeyboardFrame', () => {
       direction: { x: 1, z: 0 },
       actions: a,
       ...movementDeps,
+      moveSender,
     })
 
     expect(a.markMoving).toHaveBeenCalledOnce()
     expect(a.setMoved).toHaveBeenCalledOnce()
     expect(a.emitKeyboardPlayerState).toHaveBeenCalledOnce()
+    expect(moveSender.step).toHaveBeenCalledOnce()
   })
 
-  it('preserves early return for blocked movement outcomes', () => {
+  it('flushes the stop position on blocked movement outcomes', () => {
     const a = frameActions()
+    const moveSender = makeMoveSender()
+    const position = { x: 0, y: 0, z: 0 }
 
     runKeyboardFrame({
-      currentPlayer: { position: { x: 0, y: 0, z: 0 } },
+      currentPlayer: { position },
       hasKeysPressed: true,
       interactionExit: 'none',
       hasMovementTarget: false,
@@ -205,10 +226,206 @@ describe('runKeyboardFrame', () => {
       direction: { x: 1, z: 0 },
       actions: a,
       ...movementDeps,
+      moveSender,
       isMovementBlocked: () => true,
     })
 
     expect(a.stopMovement).toHaveBeenCalledOnce()
     expect(a.emitKeyboardPlayerState).not.toHaveBeenCalled()
+    expect(moveSender.flush).toHaveBeenCalledExactlyOnceWith(position)
+  })
+
+  it('flushes the resting position on key release without a click target', () => {
+    const a = frameActions()
+    const moveSender = makeMoveSender()
+    const position = { x: 3, y: 0, z: 4 }
+
+    runKeyboardFrame({
+      currentPlayer: { position },
+      hasKeysPressed: false,
+      interactionExit: 'none',
+      hasMovementTarget: false,
+      isInCombat: false,
+      direction: null,
+      actions: a,
+      ...movementDeps,
+      moveSender,
+    })
+
+    expect(moveSender.flush).toHaveBeenCalledExactlyOnceWith(position)
+    expect(moveSender.reset).not.toHaveBeenCalled()
+  })
+
+  it('resets without sending when a click path owns the movement queue', () => {
+    const a = frameActions()
+    const moveSender = makeMoveSender()
+
+    runKeyboardFrame({
+      currentPlayer: { position: { x: 3, y: 0, z: 4 } },
+      hasKeysPressed: false,
+      interactionExit: 'none',
+      hasMovementTarget: true,
+      isInCombat: false,
+      direction: null,
+      actions: a,
+      ...movementDeps,
+      moveSender,
+    })
+
+    expect(moveSender.flush).not.toHaveBeenCalled()
+    expect(moveSender.reset).toHaveBeenCalledOnce()
+  })
+
+  it('requests a tap-step move on release instead of flushing', () => {
+    const a = frameActions()
+    const moveSender = makeMoveSender()
+    const target = { x: 0.5, z: 0 }
+
+    runKeyboardFrame({
+      currentPlayer: { position: { x: 0.05, y: 0, z: 0 } },
+      hasKeysPressed: false,
+      interactionExit: 'none',
+      hasMovementTarget: false,
+      isInCombat: false,
+      direction: null,
+      actions: a,
+      ...movementDeps,
+      moveSender,
+      tapTracker: makeTapTracker(target),
+    })
+
+    expect(a.requestMove).toHaveBeenCalledExactlyOnceWith(target)
+    expect(moveSender.reset).toHaveBeenCalledOnce()
+    expect(moveSender.flush).not.toHaveBeenCalled()
+  })
+
+  it('drops the tap target when a click path owns the movement queue', () => {
+    const a = frameActions()
+    const moveSender = makeMoveSender()
+
+    runKeyboardFrame({
+      currentPlayer: { position: { x: 0.05, y: 0, z: 0 } },
+      hasKeysPressed: false,
+      interactionExit: 'none',
+      hasMovementTarget: true,
+      isInCombat: false,
+      direction: null,
+      actions: a,
+      ...movementDeps,
+      moveSender,
+      tapTracker: makeTapTracker({ x: 0.5, z: 0 }),
+    })
+
+    expect(a.requestMove).not.toHaveBeenCalled()
+    expect(moveSender.reset).toHaveBeenCalledOnce()
+  })
+})
+
+describe('createKeyboardMoveSender', () => {
+  it('replaces on session start, then appends one sample per interval', () => {
+    const send = vi.fn()
+    const sender = createKeyboardMoveSender(send)
+
+    sender.step({ x: 0.025, y: 0, z: 0 }, 1)
+    expect(send).toHaveBeenCalledExactlyOnceWith(
+      { x: 0.025, y: 0, z: 0 },
+      1,
+      false
+    )
+
+    sender.step({ x: 0.2, y: 0, z: 0 }, 1)
+    expect(send).toHaveBeenCalledOnce()
+
+    sender.step({ x: 0.6, y: 0, z: 0 }, 1.2)
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send).toHaveBeenLastCalledWith({ x: 0.6, y: 0, z: 0 }, 1.2, true)
+  })
+
+  it('flush appends the resting position once and ends the session', () => {
+    const send = vi.fn()
+    const sender = createKeyboardMoveSender(send)
+
+    sender.step({ x: 0.025, y: 0, z: 0 }, 1)
+    sender.step({ x: 0.3, y: 0, z: 0 }, 1)
+    sender.flush({ x: 0.3, y: 0, z: 0 })
+
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send).toHaveBeenLastCalledWith({ x: 0.3, y: 0, z: 0 }, 1, true)
+
+    sender.flush({ x: 0.3, y: 0, z: 0 })
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it('flush without a session is a no-op', () => {
+    const send = vi.fn()
+    const sender = createKeyboardMoveSender(send)
+
+    sender.flush({ x: 1, y: 0, z: 1 })
+
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('skips the flush send when the last sample already matches', () => {
+    const send = vi.fn()
+    const sender = createKeyboardMoveSender(send)
+
+    sender.step({ x: 0.025, y: 0, z: 0 }, 1)
+    sender.flush({ x: 0.025, y: 0, z: 0 })
+
+    expect(send).toHaveBeenCalledOnce()
+
+    sender.step({ x: 0.05, y: 0, z: 0 }, 1)
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send).toHaveBeenLastCalledWith({ x: 0.05, y: 0, z: 0 }, 1, false)
+  })
+})
+
+describe('createKeyboardTapTracker', () => {
+  it('completes a short tap to one full step in the last direction', () => {
+    const tracker = createKeyboardTapTracker()
+    const dir = { x: 1, z: 0 }
+
+    expect(tracker.frame(true, { x: 0, y: 0, z: 0 }, dir)).toBeNull()
+    expect(tracker.frame(true, { x: 0.05, y: 0, z: 0 }, dir)).toBeNull()
+
+    const target = tracker.frame(false, { x: 0.05, y: 0, z: 0 }, null)
+    expect(target).not.toBeNull()
+    expect(target!.x).toBeCloseTo(KEYBOARD_TAP_STEP)
+    expect(target!.z).toBeCloseTo(0)
+
+    expect(tracker.frame(false, { x: 0.05, y: 0, z: 0 }, null)).toBeNull()
+  })
+
+  it('normalizes diagonal directions to the step distance', () => {
+    const tracker = createKeyboardTapTracker()
+    const dir = { x: 1, z: 1 }
+
+    tracker.frame(true, { x: 0, y: 0, z: 0 }, dir)
+    tracker.frame(true, { x: 0.02, y: 0, z: 0.02 }, dir)
+    const target = tracker.frame(false, { x: 0.02, y: 0, z: 0.02 }, null)
+
+    expect(target).not.toBeNull()
+    const dx = target!.x
+    const dz = target!.z
+    expect(Math.hypot(dx, dz)).toBeCloseTo(KEYBOARD_TAP_STEP, 2)
+  })
+
+  it('does not glide after a session that walked past the step distance', () => {
+    const tracker = createKeyboardTapTracker()
+    const dir = { x: 1, z: 0 }
+
+    tracker.frame(true, { x: 0, y: 0, z: 0 }, dir)
+    tracker.frame(true, { x: 0.8, y: 0, z: 0 }, dir)
+
+    expect(tracker.frame(false, { x: 0.8, y: 0, z: 0 }, null)).toBeNull()
+  })
+
+  it('does not glide when the session never moved', () => {
+    const tracker = createKeyboardTapTracker()
+
+    tracker.frame(true, { x: 3, y: 0, z: 4 }, { x: 0, z: 1 })
+    tracker.frame(true, { x: 3, y: 0, z: 4 }, { x: 0, z: 1 })
+
+    expect(tracker.frame(false, { x: 3, y: 0, z: 4 }, null)).toBeNull()
   })
 })

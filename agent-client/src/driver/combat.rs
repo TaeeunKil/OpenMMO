@@ -303,6 +303,7 @@ async fn chase_target(state: &Arc<Mutex<SharedState>>, target: &ChaseTarget<'_>)
                     },
                     rotation: to_wp.rotation(),
                     floor_level: wp.floor as i8,
+                    append: false,
                 };
                 s.self_floor_level = wp.floor;
                 if let Err(e) = s.send_command(cmd).await {
@@ -364,6 +365,7 @@ fn compute_step_toward(state: &SharedState, target: &ChaseTarget) -> Option<(Cli
         },
         rotation: to_target.rotation(),
         floor_level: 0,
+        append: false,
     };
     Some((cmd, step_dist))
 }

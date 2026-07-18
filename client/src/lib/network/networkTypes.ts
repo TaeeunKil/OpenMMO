@@ -109,7 +109,12 @@ export type ClientMessage =
   | { RollCharacterStats: { character_class: CharacterClass; gender: Gender } }
   | { EnterGame: { character_id: number } }
   | {
-      PlayerMove: { position: Position; rotation: number; floor_level: number }
+      PlayerMove: {
+        position: Position
+        rotation: number
+        floor_level: number
+        append: boolean
+      }
     }
   | { ChatMessage: { message: string } }
   | {

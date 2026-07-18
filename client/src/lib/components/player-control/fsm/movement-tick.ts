@@ -14,6 +14,7 @@ import {
   stepMovementSubstrate,
   type MovementSubstrateOutcome,
   type PathWaypoint,
+  type SendPlayerMove,
 } from './movement-substrate'
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -150,7 +151,7 @@ interface RunMovementFrameInput {
   getFloorLevel: () => number
   setFloorLevel: (floor: number) => void
   writePlayerPosition: (position: Position, rotation: number) => void
-  sendPlayerMove: (position: Position, rotation: number) => void
+  sendPlayerMove: SendPlayerMove
   actions: MovementOutcomeActions
 }
 
@@ -203,7 +204,7 @@ interface RunPlayerMovementTickInput {
   getFloorLevel: () => number
   setFloorLevel: (floor: number) => void
   writePlayerPosition: (position: Position, rotation: number) => void
-  sendPlayerMove: (position: Position, rotation: number) => void
+  sendPlayerMove: SendPlayerMove
   actions: {
     transitionToDead: () => void
     transitionToRespawned: () => void

@@ -13,6 +13,14 @@ export interface PathWaypoint {
   floor: number
 }
 
+/** Network move sender: omitted/false `append` replaces the server's waypoint
+ *  queue, true extends it (see PlayerMove in shared messages). */
+export type SendPlayerMove = (
+  position: Position,
+  rotation: number,
+  append?: boolean
+) => void
+
 interface MovementSubstrateInput {
   currentPos: Position
   movementTarget: Position
@@ -39,7 +47,7 @@ interface MovementSubstrateInput {
   getFloorLevel: () => number
   setFloorLevel: (floor: number) => void
   writePlayerPosition: (position: Position, rotation: number) => void
-  sendPlayerMove: (position: Position, rotation: number) => void
+  sendPlayerMove: SendPlayerMove
 }
 
 /**
@@ -125,6 +133,10 @@ export function stepMovementSubstrate({
   const currentSpeed = result.newSpeed
   const playerRotation = result.rotation
 
+  // Stop-sync: replace the server's queue with the stop point so it doesn't
+  // keep walking to an already-sent waypoint.
+  const sendStopSync = () => sendPlayerMove(currentPos, playerRotation)
+
   if (result.arrived) {
     if (
       isMovementBlocked(
@@ -135,6 +147,7 @@ export function stepMovementSubstrate({
         currentPos.y
       )
     ) {
+      sendStopSync()
       return { kind: 'blocked' }
     }
 
@@ -175,7 +188,7 @@ export function stepMovementSubstrate({
         movementState.currentSpeed
       )
 
-      sendPlayerMove(wpPos, nextRotation)
+      sendPlayerMove(wpPos, nextRotation, true)
 
       return {
         kind: 'next_waypoint',
@@ -187,7 +200,7 @@ export function stepMovementSubstrate({
       }
     }
 
-    sendPlayerMove(movementTarget, playerRotation)
+    sendPlayerMove(movementTarget, playerRotation, true)
     return { kind: 'arrived', currentSpeed, playerRotation }
   }
 
@@ -203,6 +216,7 @@ export function stepMovementSubstrate({
   ) {
     const slid = resolveWallSlide(currentPos, stepPos, isMovementBlocked)
     if (!slid) {
+      sendStopSync()
       return { kind: 'blocked' }
     }
     stepPos = slid
@@ -211,6 +225,7 @@ export function stepMovementSubstrate({
   const dirX = Math.sin(result.rotation)
   const dirZ = Math.cos(result.rotation)
   if (isUphillTooSteep(currentPos.x, currentPos.z, currentPos.y, dirX, dirZ)) {
+    sendStopSync()
     return { kind: 'slope_blocked' }
   }
 

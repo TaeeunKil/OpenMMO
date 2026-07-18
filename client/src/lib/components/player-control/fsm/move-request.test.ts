@@ -109,7 +109,8 @@ describe('startClickMovement', () => {
     expect(started.pendingPickupAfterMoveInstanceId).toBeNull()
     expect(sendPlayerMove).toHaveBeenCalledWith(
       { x: 2, y: 5, z: 3 },
-      expect.any(Number)
+      expect.any(Number),
+      false
     )
   })
 

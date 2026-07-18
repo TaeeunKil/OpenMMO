@@ -55,7 +55,11 @@
     runMoveRequest,
     type MoveRequestActions,
   } from './player-control/fsm/move-request'
-  import { runKeyboardFrame } from './player-control/fsm/keyboard'
+  import {
+    createKeyboardMoveSender,
+    createKeyboardTapTracker,
+    runKeyboardFrame,
+  } from './player-control/fsm/keyboard'
   import {
     dispatchPlayerControlEvent as dispatchQueuedPlayerControlEvent,
     createCanvasIntentEvent,
@@ -337,13 +341,20 @@
   // Wrapper for sending move packets to track last sent position.
   // Wire format: dungeon depth d is floor_level -d; housing floors stay
   // 0..3 (client-internal -1 "outdoors" is clamped to 0).
-  function sendPlayerMove(position: Position, rotation: number) {
+  function sendPlayerMove(
+    position: Position,
+    rotation: number,
+    append = false
+  ) {
     const wrappedPosition = { ...position, x: wrapWorldX(position.x) }
     lastSentPosition = wrappedPosition
     const depth = get(currentDungeonDepth)
     const floorLevel = depth >= 1 ? -depth : Math.max(0, get(playerFloorLevel))
-    networkManager.sendPlayerMove(wrappedPosition, rotation, floorLevel)
+    networkManager.sendPlayerMove(wrappedPosition, rotation, floorLevel, append)
   }
+
+  const keyboardMoveSender = createKeyboardMoveSender(sendPlayerMove)
+  const keyboardTapTracker = createKeyboardTapTracker()
 
   function writePlayerPosition(position: Position, rotation: number) {
     const wrappedX = wrapWorldX(position.x)
@@ -637,6 +648,10 @@
       currentSpeed = nextCurrentSpeed
       playerRotation = nextPlayerRotation
     },
+    requestMove: (target: { x: number; z: number }) => {
+      const tx = wrapWorldX(target.x)
+      handleClickToMove({ x: tx, y: sampleHeight(tx, target.z), z: target.z })
+    },
   }
 
   // Update player movement (click-to-move) with acceleration/deceleration
@@ -701,7 +716,8 @@
       isMovementBlocked,
       isUphillTooSteep,
       writePlayerPosition,
-      sendPlayerMove,
+      moveSender: keyboardMoveSender,
+      tapTracker: keyboardTapTracker,
       actions: keyboardFrameActions,
     })
   }

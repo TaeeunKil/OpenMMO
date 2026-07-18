@@ -5,7 +5,7 @@ import {
 } from '../../../utils/movementUtils'
 import type { InteractionExitKind } from './interaction'
 import { shortestWrappedDeltaX } from '../../../terrain/world-wrap'
-import type { PathWaypoint } from './movement-substrate'
+import type { PathWaypoint, SendPlayerMove } from './movement-substrate'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Move-request decision (click → start / exit-interaction / ignore)
@@ -89,7 +89,7 @@ interface StartClickMovementInput {
     goalFloor: number
   ) => { waypoints: PathWaypoint[] }
   sampleHeight: (x: number, z: number) => number
-  sendPlayerMove: (position: Position, rotation: number) => void
+  sendPlayerMove: SendPlayerMove
 }
 
 export interface StartedClickMovement {
@@ -141,7 +141,9 @@ export function startClickMovement({
   const playerRotation = Math.atan2(dx, dz)
   const movementState = initMovementState(currentPos, wpPos, 0)
 
-  sendPlayerMove(wpPos, playerRotation)
+  // A fresh path replaces the server's waypoint queue; the substrate then
+  // appends the following legs.
+  sendPlayerMove(wpPos, playerRotation, false)
 
   return {
     pathWaypoints,
@@ -187,7 +189,7 @@ interface RunMoveRequestInput {
     goalFloor: number
   ) => { waypoints: PathWaypoint[] }
   sampleHeight: (x: number, z: number) => number
-  sendPlayerMove: (position: Position, rotation: number) => void
+  sendPlayerMove: SendPlayerMove
   actions: MoveRequestActions
 }
 

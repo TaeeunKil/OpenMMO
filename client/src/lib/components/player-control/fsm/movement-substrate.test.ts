@@ -64,7 +64,8 @@ describe('stepMovementSubstrate', () => {
     )
     expect(input.sendPlayerMove).toHaveBeenCalledWith(
       target,
-      expect.any(Number)
+      expect.any(Number),
+      true
     )
   })
 
@@ -87,6 +88,51 @@ describe('stepMovementSubstrate', () => {
     expect(input.setFloorLevel).toHaveBeenCalledWith(3)
     expect(input.sendPlayerMove).toHaveBeenCalledWith(
       { x: 2, y: 2, z: 0 },
+      expect.any(Number),
+      true
+    )
+  })
+
+  it('sends the stop position as a replace when a step is blocked', () => {
+    const currentPos = { x: 0, y: 0, z: 0 }
+    const input = makeBaseInput(currentPos, { x: 10, y: 0, z: 0 })
+    input.isMovementBlocked.mockReturnValue(true)
+
+    const outcome = stepMovementSubstrate(input)
+
+    expect(outcome.kind).toBe('blocked')
+    expect(input.writePlayerPosition).not.toHaveBeenCalled()
+    expect(input.sendPlayerMove).toHaveBeenCalledExactlyOnceWith(
+      currentPos,
+      expect.any(Number)
+    )
+  })
+
+  it('sends the stop position when arrival into the target is blocked', () => {
+    const currentPos = { x: 0.99, y: 0, z: 0 }
+    const input = makeBaseInput(currentPos, { x: 1, y: 0, z: 0 })
+    input.deltaTimeSeconds = 1
+    input.isMovementBlocked.mockReturnValue(true)
+
+    const outcome = stepMovementSubstrate(input)
+
+    expect(outcome.kind).toBe('blocked')
+    expect(input.sendPlayerMove).toHaveBeenCalledExactlyOnceWith(
+      currentPos,
+      expect.any(Number)
+    )
+  })
+
+  it('sends the stop position when the slope blocks the step', () => {
+    const currentPos = { x: 0, y: 0, z: 0 }
+    const input = makeBaseInput(currentPos, { x: 10, y: 0, z: 0 })
+    input.isUphillTooSteep.mockReturnValue(true)
+
+    const outcome = stepMovementSubstrate(input)
+
+    expect(outcome.kind).toBe('slope_blocked')
+    expect(input.sendPlayerMove).toHaveBeenCalledExactlyOnceWith(
+      currentPos,
       expect.any(Number)
     )
   })
