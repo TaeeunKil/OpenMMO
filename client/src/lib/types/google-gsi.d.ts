@@ -7,7 +7,11 @@ interface GoogleIdApi {
   initialize(config: {
     client_id: string
     callback: (response: GoogleCredentialResponse) => void
+    auto_select?: boolean
+    itp_support?: boolean
+    use_fedcm_for_prompt?: boolean
   }): void
+  prompt(): void
   renderButton(
     parent: HTMLElement,
     options: {

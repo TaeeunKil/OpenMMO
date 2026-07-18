@@ -79,7 +79,12 @@
     googleId.initialize({
       client_id: clientId,
       callback: (response) => void handleCredential(response),
+      auto_select: true,
+      itp_support: true,
+      use_fedcm_for_prompt: true,
     })
+    // Auto sign-in for returning users; button below is the fallback.
+    googleId.prompt()
     googleId.renderButton(buttonContainer, {
       theme: 'filled_blue',
       size: 'large',
