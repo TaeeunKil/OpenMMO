@@ -797,8 +797,20 @@
    */
   function getFloorAtForClick(x: number, z: number, y: number): number {
     const depth = get(currentDungeonDepth)
-    if (depth >= 1) {
-      const shaftFloor = dungeonManager.shaftPathfindingFloorAt(x, z, depth)
+    // Stairwell clicks resolve via the shaft mapping, not the raw Y lookup:
+    // intermediate steps are keyed to the shallower connected floor, so the
+    // Y-based lookup returns the deeper floor and strands A* at the bottom
+    // landing — the player walks all the way down, then climbs back to the
+    // clicked step. Underground, query the current depth's shafts. On the
+    // surface (depth 0) the only clickable shaft is the entrance stairs
+    // (floor 1's up-shaft), so query it at depth 1: a mid-stair click then
+    // targets floor 0 and the player stops right at the clicked step.
+    if (depth >= 1 || dungeonManager.isOnEntranceShaft(x, z)) {
+      const shaftFloor = dungeonManager.shaftPathfindingFloorAt(
+        x,
+        z,
+        Math.max(depth, 1)
+      )
       if (shaftFloor !== null) return shaftFloor
     }
 
