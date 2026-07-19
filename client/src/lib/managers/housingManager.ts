@@ -30,6 +30,7 @@ import {
   findRoomAtPoint,
   findSupportingHouse,
   hasFloorSupport,
+  houseFloorHeightAt,
   isPointUnderHouseXZ,
   type RoomAABB,
 } from './housing-queries'
@@ -244,6 +245,11 @@ export class HousingManager {
   /** Find ALL rooms containing a world point (for overlapping stairwells etc). */
   findAllRoomsAtPoint(x: number, y: number, z: number) {
     return findAllRoomsAtPoint(this.housesById, x, y, z)
+  }
+
+  /** Ground Y on a given house floor at (x, z), stairwell ramps included. */
+  floorHeightAt(floorLevel: number, x: number, z: number): number | null {
+    return houseFloorHeightAt(this.housesById, floorLevel, x, z)
   }
 
   /**

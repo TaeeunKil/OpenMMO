@@ -667,6 +667,61 @@ impl super::GameState {
         .await;
     }
 
+    /// Apply a floor change reported between waypoints, leaving the move queue
+    /// alone. Keeps AOI membership tracking where the player visually is while
+    /// they walk a stairwell, which is one uninterrupted leg.
+    pub async fn update_player_floor(&self, player_id: &PlayerId, floor_level: i8) {
+        let (current_floor, position) = {
+            let players = self.players.read().await;
+            match players.get(player_id) {
+                Some(p) => (p.floor_level, p.position),
+                None => return,
+            }
+        };
+
+        let floor_level = if floor_level < 0 || current_floor < 0 {
+            self.validated_dungeon_floor(player_id, current_floor, floor_level, &position)
+                .await
+        } else {
+            floor_level
+        };
+        if floor_level == current_floor {
+            return;
+        }
+
+        // Queued legs carry the floor they were sent with, and snapping to one
+        // re-applies it. Without this the explicit change is clobbered the
+        // moment the leg finishes, flickering the player back out of view.
+        // Legs are appended one at a time as each waypoint is reached, so every
+        // pending one belongs to the floor we just moved to.
+        {
+            let mut queues = self.movement_intents.write().await;
+            if let Some(queue) = queues.get_mut(player_id) {
+                for intent in queue.iter_mut() {
+                    intent.floor_level = floor_level;
+                }
+            }
+        }
+
+        let moved_player = {
+            let mut players = self.players.write().await;
+            let Some(player) = players.get_mut(player_id) else {
+                return;
+            };
+            player.floor_level = floor_level;
+            player.clone()
+        };
+
+        let update_msg = ServerMessage::PlayerMoved {
+            player_id: player_id.clone(),
+            position: moved_player.position,
+            rotation: moved_player.rotation,
+            floor_level,
+        };
+        self.finish_position_update(player_id, position, current_floor, moved_player, update_msg)
+            .await;
+    }
+
     pub async fn teleport_player(
         &self,
         player_id: &PlayerId,

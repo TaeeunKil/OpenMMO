@@ -26,17 +26,15 @@
     TORCH_SHADOW_BIAS,
   } from '../../utils/torchFlicker'
   import {
-    playerFloorLevel,
+    playerVisualFloorLevel,
     playerInsideHouseId,
   } from '../../stores/housingStore'
   import { currentDungeonDepth } from '../../stores/dungeonStore'
   import { dungeonManager } from '../../managers/dungeonManager'
   import { housingManager } from '../../managers/housingManager'
-  import { bridgeManager } from '../../managers/bridgeManager'
   import {
     shortestWrappedDeltaX,
     unwrapWorldXNear,
-    wrapWorldX,
   } from '../../terrain/world-wrap'
   import { OFFSCREEN_Y } from '../../utils/house-geo-utils'
   import { torchLightEnabled } from '../../stores/debugStore'
@@ -119,7 +117,9 @@
     remotePlayerManager.attackAnimationDuration = playerAttackDuration
   })
 
-  let localFloorLevel = $derived(Math.max(0, $playerFloorLevel))
+  // Visual floor: matches what remotes report, so a player on the stairs isn't
+  // hidden from the floor they're still on. See playerVisualFloorLevel.
+  let localFloorLevel = $derived(Math.max(0, $playerVisualFloorLevel))
   let localHouseId = $derived($playerInsideHouseId)
   let localDungeonDepth = $derived($currentDungeonDepth)
   let isUnderground = $derived(localDungeonDepth >= 1)
@@ -429,19 +429,8 @@
       {@const displayX = currentPlayer
         ? unwrapWorldXNear(currentPlayer.position.x, remotePlayer.position.x)
         : remotePlayer.position.x}
-      {@const baseY =
-        player.floorLevel > 0 || player.floorLevel < 0
-          ? remotePlayer.position.y
-          : (bridgeManager.findDeckYAt(
-              wrapWorldX(displayX),
-              remotePlayer.position.z,
-              null
-            ) ??
-            heightManager.getHeightAtWorldPosition(
-              displayX,
-              remotePlayer.position.z
-            ) ??
-            remotePlayer.position.y)}
+      <!-- position.y is ground-resampled per tick by remotePlayerManager -->
+      {@const baseY = remotePlayer.position.y}
       <PlayerModel
         bind:this={otherPlayerModels[index]}
         position={new THREE.Vector3(

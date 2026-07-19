@@ -1,5 +1,10 @@
 import type { HouseData } from '../types/housing'
-import { floorYBase, type WallDirection } from '../utils/house-geometry'
+import {
+  FLOOR_THICKNESS,
+  floorYBase,
+  getStairwellYOffset,
+  type WallDirection,
+} from '../utils/house-geometry'
 import { getWallByDir } from './housing-passability'
 
 /** Find the first room containing a world point (fast, no allocation). */
@@ -47,6 +52,64 @@ export function isPointUnderHouseXZ(
     }
   }
   return false
+}
+
+/**
+ * Ground Y on a given house floor at (x, z), stairwell ramps included — the
+ * house analogue of `dungeonManager.floorHeightAt`, for entities whose floor
+ * level is known but whose Y is not (remote players). Null when no room
+ * covers the point on that floor.
+ *
+ * Inside a stairwell footprint the ramp always wins, even though the upper
+ * floor's room overlaps it: that floor is punched through there
+ * (`collectFloorGeometry`) and its passability seals everything but the top
+ * landing, where the ramp height already equals the flat floor height.
+ */
+export function houseFloorHeightAt(
+  housesById: ReadonlyMap<string, HouseData>,
+  floorLevel: number,
+  x: number,
+  z: number
+): number | null {
+  let stairY: number | null = null
+  let stairDist = Infinity
+  let flatY: number | null = null
+
+  for (const house of housesById.values()) {
+    for (const room of house.rooms) {
+      const rx = house.origin.x + room.localX
+      const rz = house.origin.z + room.localZ
+      if (x < rx || x > rx + room.sizeX || z < rz || z > rz + room.sizeZ) {
+        continue
+      }
+
+      if (room.roomType === 'stairwell') {
+        // A stairwell spans floorLevel..floorLevel+1, and the walker reports
+        // either end depending on where the sender's hysteresis flipped.
+        if (floorLevel < room.floorLevel || floorLevel > room.floorLevel + 1) {
+          continue
+        }
+        const y =
+          house.origin.y +
+          getStairwellYOffset(room, house.origin.x, house.origin.z, x, z)
+        // Stacked stairwells share an XZ column; the reported floor is always
+        // within one rise of the true Y, so nearest-to-floor-base disambiguates.
+        const dist = Math.abs(
+          y - (house.origin.y + floorYBase(floorLevel, room.wallHeight))
+        )
+        if (dist < stairDist) {
+          stairDist = dist
+          stairY = y
+        }
+      } else if (room.floorLevel === floorLevel) {
+        flatY =
+          house.origin.y +
+          floorYBase(room.floorLevel, room.wallHeight) +
+          FLOOR_THICKNESS / 2
+      }
+    }
+  }
+  return stairY ?? flatY
 }
 
 export interface RoomAABB {

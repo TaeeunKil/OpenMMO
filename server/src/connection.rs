@@ -723,6 +723,14 @@ async fn handle_client_message(
             }
         }
 
+        ClientMessage::PlayerFloorChanged { floor_level } => {
+            if let Some(id) = &state.player_id {
+                game_state.update_player_floor(id, floor_level).await;
+            } else {
+                warn!("Received floor change from client that is not in game");
+            }
+        }
+
         ClientMessage::ChatMessage { message } => {
             if let Some(id) = &state.player_id {
                 game_state.send_chat_message(id, message).await;

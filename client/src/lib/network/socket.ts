@@ -329,6 +329,11 @@ class NetworkManager {
     })
   }
 
+  /** Floor change between waypoints — see ClientMessage::PlayerFloorChanged. */
+  sendPlayerFloor(floorLevel: number) {
+    this.sendMessage({ PlayerFloorChanged: { floor_level: floorLevel } })
+  }
+
   sendMonsterMove(
     monsterId: string,
     position: { x: number; y: number; z: number },

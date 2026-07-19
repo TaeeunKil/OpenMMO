@@ -40,6 +40,7 @@
   import {
     playerFloorOffset,
     playerFloorLevel,
+    playerVisualFloorLevel,
     playerInsideHouseId,
   } from '../../stores/housingStore'
   import {
@@ -421,6 +422,7 @@
       currentInsideHouseId = insideId
       playerInsideFloor = effectiveFloor
       playerFloorLevel.set(effectiveFloor)
+      playerVisualFloorLevel.set(effectiveFloor)
       playerInsideHouseId.set(insideId)
     }
 

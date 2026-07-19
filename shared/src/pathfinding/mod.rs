@@ -600,4 +600,239 @@ mod tests {
             result.waypoints
         );
     }
+
+    /// Two-floor house with a stairwell in the last column (world x∈[1,2],
+    /// z∈[0,2]); its bottom landing is cell (1,1). Each floor's grid can
+    /// independently seal the landing's south edge — the exit into the
+    /// ground-floor room.
+    fn make_stairwell_house(lower_seals: bool, upper_seals: bool) -> (String, RuntimePassability) {
+        let (w, d) = (2u8, 3u8);
+        let landing = 1 + w as usize;
+        let mut lower = vec![0u8; (w * d) as usize];
+        let mut upper = vec![0u8; (w * d) as usize];
+        if lower_seals {
+            lower[landing] |= EDGE_S;
+        }
+        if upper_seals {
+            upper[landing] |= EDGE_S;
+        }
+
+        let grid = |floor_level: u8, y_base: f32, cells: Vec<u8>| RuntimeFloorGrid {
+            floor_level,
+            origin_x: 0,
+            origin_z: 0,
+            width: w,
+            depth: d,
+            y_base,
+            wall_height: 3.0,
+            cells,
+        };
+
+        let rp = RuntimePassability {
+            house_origin_x: 0.0,
+            house_origin_z: 0.0,
+            min_x: 0.0,
+            max_x: w as f32,
+            min_z: 0.0,
+            max_z: d as f32,
+            floors: vec![grid(0, 0.0, lower), grid(1, 3.1, upper)],
+            stairwells: vec![StairwellInfo {
+                local_min_x: 1,
+                local_min_z: 0,
+                local_max_x: 2,
+                local_max_z: 2,
+                lower_floor: 0,
+                upper_floor: 1,
+                along_z: true,
+                reversed: false,
+            }],
+        };
+        ("house".to_string(), rp)
+    }
+
+    /// Y=3.2 sits in the upper floor's window only (lower ends at 3.0), so
+    /// before the stairwell rule this move saw just the upper grid, which seals
+    /// the landing — and since a blocked step never moves the player, their Y
+    /// never corrected either. Permanently stuck at the foot of the stairs.
+    #[test]
+    fn stairwell_exit_allowed_when_the_other_connected_floor_allows() {
+        let (id, rp) = make_stairwell_house(false, true);
+        let mut cache = PassabilityCache::new();
+        cache.insert(id, rp);
+
+        assert!(
+            !query::is_movement_blocked(&cache, 1.5, 1.5, 1.5, 2.5, 3.2),
+            "stepping off the bottom landing must stay open while the lower floor allows it"
+        );
+    }
+
+    #[test]
+    fn stairwell_exit_blocked_when_both_connected_floors_block() {
+        let (id, rp) = make_stairwell_house(true, true);
+        let mut cache = PassabilityCache::new();
+        cache.insert(id, rp);
+
+        assert!(
+            query::is_movement_blocked(&cache, 1.5, 1.5, 1.5, 2.5, 3.2),
+            "a genuinely walled stairwell exit must still block"
+        );
+    }
+
+    /// The relaxation is scoped to stairwell footprints: an ordinary wall one
+    /// column over is still selected by Y alone and still blocks.
+    #[test]
+    fn non_stairwell_wall_still_blocks_by_y_window() {
+        let (id, mut rp) = make_stairwell_house(false, false);
+        rp.floors[1].cells[2] |= EDGE_S; // cell (0,1), outside the stairwell
+        let mut cache = PassabilityCache::new();
+        cache.insert(id, rp);
+
+        assert!(
+            query::is_movement_blocked(&cache, 0.5, 1.5, 0.5, 2.5, 3.2),
+            "a normal wall on the floor matching the mover's Y must block"
+        );
+    }
+}
+
+#[cfg(test)]
+mod real_house_repro {
+    use super::astar::find_path;
+    use super::*;
+
+    /// The real Aldermark house r-23_+73_1: two floors, stairwell in the last
+    /// column. Grids copied verbatim from its stored passability.
+    fn real_house() -> (String, RuntimePassability) {
+        let f0: Vec<u8> = vec![
+            9, 1, 1, 1, 1, 1, 1, 1, 3, 11, 8, 0, 0, 0, 0, 0, 0, 0, 2, 10, 8, 0, 0, 0, 0, 0, 0, 0,
+            2, 10, 12, 4, 4, 4, 4, 4, 0, 0, 0, 2, 1, 1, 1, 1, 1, 3, 8, 0, 0, 2, 0, 0, 0, 0, 0, 2,
+            12, 4, 4, 6,
+        ];
+        let f1: Vec<u8> = vec![
+            9, 1, 1, 1, 1, 1, 1, 1, 1, 3, 8, 0, 0, 0, 0, 0, 0, 0, 2, 10, 8, 0, 0, 0, 0, 0, 0, 0, 2,
+            10, 12, 4, 4, 4, 4, 4, 0, 0, 2, 14, 1, 1, 1, 1, 1, 3, 8, 0, 0, 3, 0, 0, 0, 0, 0, 2, 12,
+            4, 4, 6,
+        ];
+        let grid = |floor_level: u8, y_base: f32, cells: Vec<u8>| RuntimeFloorGrid {
+            floor_level,
+            origin_x: -6,
+            origin_z: 0,
+            width: 10,
+            depth: 6,
+            y_base,
+            wall_height: 3.0,
+            cells,
+        };
+        let rp = RuntimePassability {
+            house_origin_x: -1470.0,
+            house_origin_z: 4732.0,
+            min_x: -1476.0,
+            max_x: -1466.0,
+            min_z: 4732.0,
+            max_z: 4738.0,
+            floors: vec![grid(0, 1.0609375, f0), grid(1, 4.1609375, f1)],
+            stairwells: vec![StairwellInfo {
+                local_min_x: 3,
+                local_min_z: 0,
+                local_max_x: 4,
+                local_max_z: 4,
+                lower_floor: 0,
+                upper_floor: 1,
+                along_z: true,
+                reversed: true,
+            }],
+        };
+        ("r-23_+73_1".to_string(), rp)
+    }
+
+    #[test]
+    fn repro_second_floor_walk_west() {
+        let (id, rp) = real_house();
+        let mut cache = PassabilityCache::new();
+        cache.insert(id, rp);
+
+        // Player stuck at world (-1468.0, 4733.07) on floor 1, clicking west
+        // into the far room (world x -1472 is local -2, inside room 2).
+        let r = find_path(-1468.0, 4733.07, 1, -1472.0, 4733.5, 1, &cache, 20000);
+        assert!(
+            r.found,
+            "a straight walk west across floor 1 must find a path"
+        );
+        for w in &r.waypoints {
+            assert!(
+                w.x < -1466.5,
+                "path must not detour east into the stairwell: {:?}",
+                r.waypoints
+            );
+        }
+    }
+
+    /// `old_crypt`, whose AABB is an 80 m square swallowing a whole block of
+    /// Aldermark — including the house above. Every cell walls off every side,
+    /// and one of its 19 stairwells sits directly under the house.
+    fn dungeon_under_the_house() -> (String, RuntimePassability) {
+        let (w, d) = (80usize, 80usize);
+        let grid = |floor_level: u8, y_base: f32| RuntimeFloorGrid {
+            floor_level,
+            origin_x: 0,
+            origin_z: 0,
+            width: w as u8,
+            depth: d as u8,
+            y_base,
+            wall_height: 3.0,
+            cells: vec![EDGE_N | EDGE_E | EDGE_S | EDGE_W; w * d],
+        };
+        let rp = RuntimePassability {
+            house_origin_x: -1490.0,
+            house_origin_z: 4680.0,
+            min_x: -1490.0,
+            max_x: -1410.0,
+            min_z: 4680.0,
+            max_z: 4760.0,
+            floors: vec![grid(0, -30.0), grid(1, -26.9)],
+            // World x -1470..-1466, z 4730..4734 — squarely under the house.
+            stairwells: vec![StairwellInfo {
+                local_min_x: 20,
+                local_min_z: 50,
+                local_max_x: 24,
+                local_max_z: 54,
+                lower_floor: 0,
+                upper_floor: 1,
+                along_z: true,
+                reversed: false,
+            }],
+        };
+        ("dungeon:old_crypt".to_string(), rp)
+    }
+
+    /// The stairwell relaxation consults both connected floors *without* a Y
+    /// window — correct inside one building, catastrophic across a dungeon 30 m
+    /// down whose footprint covers the surface. Walking west on the house's
+    /// second floor was blocked by a buried crypt wall.
+    #[test]
+    fn dungeon_stairwell_below_does_not_block_the_surface_house() {
+        let mut cache = PassabilityCache::new();
+        let (id, rp) = real_house();
+        cache.insert(id, rp);
+        let (did, drp) = dungeon_under_the_house();
+        cache.insert(did, drp);
+
+        assert!(
+            !query::is_movement_blocked(&cache, -1468.0, 4732.45, -1468.05, 4732.45, 4.21),
+            "a dungeon stairwell 30 m below must not wall off the house above it"
+        );
+    }
+
+    /// The Y gate must not be so tight that it undoes the original fix: down in
+    /// the crypt, on the stairwell itself, both floors still get consulted.
+    #[test]
+    fn dungeon_stairwell_still_relaxes_at_its_own_depth() {
+        let mut cache = PassabilityCache::new();
+        let (did, drp) = dungeon_under_the_house();
+        cache.insert(did, drp);
+
+        assert!(
+            query::is_movement_blocked(&cache, -1468.0, 4732.45, -1468.05, 4732.45, -29.5),
+            "every cell is walled, so the move must still block at crypt depth"
+        );
+    }
 }

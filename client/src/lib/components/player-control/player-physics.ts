@@ -43,6 +43,9 @@ export function createPlayerPhysics(deps: PlayerPhysicsDeps): PlayerPhysics {
     // underground (and on the surface entrance ramp).
     const dungeonY = dungeonManager.sampleHeightAt(x, z)
     if (dungeonY !== null) return dungeonY
+    // Houses ride the scalar floor offset below, not a per-(x, z) lookup — a
+    // stairwell footprint sits inside the upper room, so position alone can't
+    // say whether a point is the room or the ramp.
     const deckY = bridgeManager.findDeckYAt(x, z, deps.getCurrentPlayerY())
     if (deckY !== null) return deckY
     return (
@@ -89,7 +92,14 @@ export function createPlayerPhysics(deps: PlayerPhysicsDeps): PlayerPhysics {
     const aheadX = fromX + dirX * SLOPE_LOOKAHEAD_DISTANCE
     const aheadZ = fromZ + dirZ * SLOPE_LOOKAHEAD_DISTANCE
     const aheadY = sampleHeight(aheadX, aheadZ)
-    return isSlopeTooSteepUphill(fromY, aheadY, SLOPE_LOOKAHEAD_DISTANCE)
+    if (!isSlopeTooSteepUphill(fromY, aheadY, SLOPE_LOOKAHEAD_DISTANCE)) {
+      return false
+    }
+    // Indoors both samples carry the same floor offset, so the test above
+    // reduces to the raw terrain slope under the house and walls off a whole
+    // contour line across the rooms. House floors are flat and walkable.
+    // Checked only on rejection — the house scan is the expensive half.
+    return !housingManager.isPointUnderHouseXZ(wrapWorldX(fromX), fromZ)
   }
 
   return { sampleHeight, isMovementBlocked, isUphillTooSteep }

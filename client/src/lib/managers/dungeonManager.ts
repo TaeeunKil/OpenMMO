@@ -880,22 +880,26 @@ class DungeonManager {
   }
 
   /**
+   * Surface entrance ramp height, or null when (x, z) is off the shaft.
+   * Independent of any observer's depth, unlike `sampleHeightAt`.
+   */
+  entranceRampHeightAt(x: number, z: number): number | null {
+    if (!this.active) return null
+    const first = this.layouts[0]
+    if (!first) return null
+    const t = this.shaftRunPos(first.upShaft, x, z)
+    if (t === null) return null
+    return this.rampY(this.entrance!.y, this.floorY(1), t)
+  }
+
+  /**
    * Ground height for the local player while the dungeon is active, or
    * null when terrain should be used instead (surface, outside shafts).
    */
   sampleHeightAt(x: number, z: number): number | null {
     if (!this.active) return null
     const depth = get(currentDungeonDepth)
-
-    if (depth === 0) {
-      // On the surface: only the entrance shaft ramp overrides terrain.
-      const first = this.layouts[0]
-      if (!first) return null
-      const t = this.shaftRunPos(first.upShaft, x, z)
-      if (t === null) return null
-      return this.rampY(this.entrance!.y, this.floorY(1), t)
-    }
-
+    if (depth === 0) return this.entranceRampHeightAt(x, z)
     return this.floorHeightAt(depth, x, z)
   }
 

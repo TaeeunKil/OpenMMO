@@ -13,6 +13,8 @@ import {
   type MovementConfig,
   type PlayerState,
 } from '../utils/movementUtils'
+import { entityGroundY } from './entity-ground'
+import type { TerrainHeightManager } from './terrainHeightManager'
 
 // Use the same movement config as local player
 const MOVEMENT_CONFIG: MovementConfig = {
@@ -21,6 +23,8 @@ const MOVEMENT_CONFIG: MovementConfig = {
 
 class PlayerStateManager {
   players = new SvelteMap<string, PlayerState>()
+
+  heightManager: TerrainHeightManager | null = null
 
   // Attack animation duration in seconds (updated from actual animation data)
   attackAnimationDuration = 1.0
@@ -125,6 +129,18 @@ class PlayerStateManager {
         movement,
         MOVEMENT_CONFIG,
         dt
+      )
+
+      // calculateMovementStep only advances XZ and carries Y over, and the
+      // move protocol has no per-waypoint Y, so the ground has to be
+      // resampled here. Without it a remote keeps the Y it entered the floor
+      // with, which reads as sinking through dungeon and house stairs.
+      result.newPos.y = entityGroundY(
+        this.heightManager,
+        otherPlayers.get(playerId)?.floorLevel ?? 0,
+        result.newPos.x,
+        result.newPos.z,
+        currentPos.y
       )
 
       // Update movement state

@@ -34,7 +34,11 @@
     type PlayerState,
   } from '../utils/movementUtils'
   import type { TerrainHeightManager } from '../managers/terrainHeightManager'
-  import { playerFloorOffset, playerFloorLevel } from '../stores/housingStore'
+  import {
+    playerFloorOffset,
+    playerFloorLevel,
+    playerVisualFloorLevel,
+  } from '../stores/housingStore'
   import { currentDungeonDepth } from '../stores/dungeonStore'
   import { dungeonManager } from '../managers/dungeonManager'
   import { housingManager } from '../managers/housingManager'
@@ -135,6 +139,27 @@
   playerFloorOffset.subscribe((v) => (floorOffset = v))
 
   let currentPlayer = $state<LocalPlayer | null>(null)
+
+  /** Floor as broadcast to others — visual, not playerFloorLevel. See
+   * `playerVisualFloorLevel`. */
+  function wireFloorLevel(): number {
+    const depth = get(currentDungeonDepth)
+    return depth >= 1 ? -depth : Math.max(0, get(playerVisualFloorLevel))
+  }
+
+  let lastSentFloorLevel: number | null = null
+
+  /** Standalone floor send — move packets only land at waypoints. See
+   * `ClientMessage::PlayerFloorChanged`. */
+  function syncFloorLevel() {
+    if (!currentPlayer) return
+    const floorLevel = wireFloorLevel()
+    if (floorLevel === lastSentFloorLevel) return
+    lastSentFloorLevel = floorLevel
+    networkManager.sendPlayerFloor(floorLevel)
+  }
+  playerVisualFloorLevel.subscribe(syncFloorLevel)
+  currentDungeonDepth.subscribe(syncFloorLevel)
 
   const { renderer } = useThrelte()
 
@@ -348,8 +373,8 @@
   ) {
     const wrappedPosition = { ...position, x: wrapWorldX(position.x) }
     lastSentPosition = wrappedPosition
-    const depth = get(currentDungeonDepth)
-    const floorLevel = depth >= 1 ? -depth : Math.max(0, get(playerFloorLevel))
+    const floorLevel = wireFloorLevel()
+    lastSentFloorLevel = floorLevel
     networkManager.sendPlayerMove(wrappedPosition, rotation, floorLevel, append)
   }
 

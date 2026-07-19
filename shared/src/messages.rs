@@ -85,6 +85,13 @@ pub enum ClientMessage {
         #[serde(default)]
         append: bool,
     },
+    /// Floor change that happens *between* waypoints. `PlayerMove::floor_level`
+    /// only lands when its waypoint is reached, and a stairwell is a single leg
+    /// (A* omits intermediate stair cells), so without this a player descending
+    /// stairs stays in the upper floor's AOI until they hit the bottom landing.
+    PlayerFloorChanged {
+        floor_level: i8,
+    },
     ChatMessage {
         message: String,
     },

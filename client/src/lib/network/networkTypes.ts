@@ -116,6 +116,7 @@ export type ClientMessage =
         append: boolean
       }
     }
+  | { PlayerFloorChanged: { floor_level: number } }
   | { ChatMessage: { message: string } }
   | {
       RequestSpawnMonster: {
