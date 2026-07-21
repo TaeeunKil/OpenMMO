@@ -36,6 +36,28 @@ pub(super) struct MoveIntent {
 /// polyline instead of beelining (and corner-cutting) to the newest target.
 pub(super) type MoveQueue = VecDeque<MoveIntent>;
 
+/// A step the sim refused: where the server has the player (for the correction)
+/// plus the diagnostics for the warn. Both are emitted together in
+/// `correct_refused_positions`, once per correction actually sent rather than
+/// once per refused tick, so a player grinding a wall is one log line per
+/// cooldown window instead of one per tick.
+struct RefusedMove {
+    player_id: PlayerId,
+    position: Position,
+    rotation: f32,
+    floor_level: i8,
+    step_x: f32,
+    step_z: f32,
+    step_y: f32,
+    step_floor: u8,
+    intent_floor: i8,
+    /// Owned: `BlockInfo::key` borrows the passability cache, which is unlocked
+    /// before the warn is emitted.
+    block_key: String,
+    stairwell: bool,
+    consulted: usize,
+}
+
 /// Wire fields of a client PlayerMove (see shared messages).
 pub(crate) struct MoveCommand {
     pub(crate) position: Position,
@@ -514,7 +536,7 @@ impl super::GameState {
     pub async fn tick_player_movement(&self, dt: f32) {
         let max_step = PLAYER_MOVE_SPEED * MOVE_SPEED_SLACK * dt.max(0.0);
         let mut moved: Vec<(PlayerId, Position, i8, Player)> = Vec::new();
-        let mut refused: Vec<(PlayerId, ServerMessage)> = Vec::new();
+        let mut refused: Vec<RefusedMove> = Vec::new();
         {
             let mut queues = self.movement_intents.write().await;
             if queues.is_empty() {
@@ -583,26 +605,24 @@ impl super::GameState {
                                 break;
                             }
                             super::passability::StepOutcome::Blocked(info) => {
-                                // Stays at warn: with the slide in place a hit
-                                // means client and server disagree — a bug
-                                // signal, not an expected outcome.
-                                warn!(
-                                    "Blocked move for player {}: ({:.1},{:.1}) -> ({:.1},{:.1}) \
-                                     y={:.1}->{:.1} floor={} (intent {}) by {} stairwell={} \
-                                     consulted={}",
-                                    player_id,
-                                    player.position.x,
-                                    player.position.z,
+                                // A blocked step never moves the player, so the
+                                // position/rotation here are what the correction
+                                // sends. Logged later with the correction, once
+                                // per snap instead of once per refused tick.
+                                refused.push(RefusedMove {
+                                    player_id: *player_id,
+                                    position: player.position,
+                                    rotation: player.rotation,
+                                    floor_level: player.floor_level,
                                     step_x,
                                     step_z,
-                                    player.position.y,
                                     step_y,
                                     step_floor,
-                                    intent.floor_level,
-                                    info.key,
-                                    info.stairwell,
-                                    info.consulted
-                                );
+                                    intent_floor: intent.floor_level,
+                                    block_key: info.key.to_string(),
+                                    stairwell: info.stairwell,
+                                    consulted: info.consulted,
+                                });
                                 blocked = true;
                                 break;
                             }
@@ -632,16 +652,6 @@ impl super::GameState {
                 {
                     moved.push((*player_id, old_position, old_floor, player.clone()));
                 }
-                if blocked {
-                    refused.push((
-                        *player_id,
-                        ServerMessage::PositionCorrected {
-                            position: player.position,
-                            rotation: player.rotation,
-                            floor_level: player.floor_level,
-                        },
-                    ));
-                }
                 !blocked && !waypoints.is_empty()
             });
         }
@@ -669,7 +679,11 @@ impl super::GameState {
     /// Tell players whose step was refused where the server actually has them.
     /// Nothing else reconciles the two sims — the client ignores its own
     /// `PlayerMoved` — so a refusal would otherwise strand the two apart.
-    async fn correct_refused_positions(&self, refused: Vec<(PlayerId, ServerMessage)>) {
+    ///
+    /// Throttled per player, and the warn rides the same gate: one line per
+    /// snap actually sent, not one per refused tick, so a player grinding a
+    /// wall no longer floods the journal.
+    async fn correct_refused_positions(&self, refused: Vec<RefusedMove>) {
         if refused.is_empty() {
             return;
         }
@@ -683,17 +697,43 @@ impl super::GameState {
             // forever, and they are exactly who needs the next snap.
             refused
                 .into_iter()
-                .filter(|(player_id, _)| {
-                    let due = !last.contains_key(player_id);
+                .filter(|r| {
+                    let due = !last.contains_key(&r.player_id);
                     if due {
-                        last.insert(*player_id, now);
+                        last.insert(r.player_id, now);
                     }
                     due
                 })
                 .collect()
         };
-        for (player_id, msg) in due {
-            self.send_direct_message(&player_id, msg).await;
+        for r in due {
+            // Stays at warn: with the slide in place a hit means client and
+            // server disagree — a bug signal, not an expected outcome.
+            warn!(
+                "Blocked move for player {}: ({:.1},{:.1}) -> ({:.1},{:.1}) y={:.1}->{:.1} \
+                 floor={} (intent {}) by {} stairwell={} consulted={}",
+                r.player_id,
+                r.position.x,
+                r.position.z,
+                r.step_x,
+                r.step_z,
+                r.position.y,
+                r.step_y,
+                r.step_floor,
+                r.intent_floor,
+                r.block_key,
+                r.stairwell,
+                r.consulted,
+            );
+            self.send_direct_message(
+                &r.player_id,
+                ServerMessage::PositionCorrected {
+                    position: r.position,
+                    rotation: r.rotation,
+                    floor_level: r.floor_level,
+                },
+            )
+            .await;
         }
     }
 
