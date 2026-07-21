@@ -210,6 +210,15 @@ Prod runs both binaries as systemd units (`tools/systemd/`), with the client bun
 
 Deploy by running `tools/deploy-prod.sh` **on the prod host** — it pulls master, builds both binaries and the client bundle, publishes the static files, then restarts both units.
 
+Over SSH, detach it from the session so a dropped connection cannot kill the build midway:
+
+```bash
+ssh prod 'setsid nohup bash ~/work/OnlineRPG/tools/deploy-prod.sh > ~/deploy-latest.log 2>&1 < /dev/null &'
+ssh prod 'tail -f ~/deploy-latest.log'   # follow; ends at "==> deployed <commit>"
+```
+
+Losing the connection to a foreground run costs the whole build but never a half-deploy: the script builds everything first and only touches live state at the end (`rsync` to the webroot, then the restarts), so an interruption before that leaves the old bundle and the old server process running as a matched pair.
+
 ### Logs
 
 Both units log to journald (`StandardOutput=journal`); there are no separate log files.
