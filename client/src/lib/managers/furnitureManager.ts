@@ -1,6 +1,7 @@
 import type { ObjectPlacement } from '../stores/editorStore'
 import {
   passability_set_furniture,
+  passability_remove_furniture,
   furniture_is_solid,
 } from '../wasm/onlinerpg_shared'
 
@@ -25,6 +26,9 @@ export interface FurnitureDebugPiece {
 class FurnitureManager {
   /** Per-region sealed pieces, for the debug overlay. */
   private regionDebug = new Map<string, FurnitureDebugPiece[]>()
+  /** Regions currently held in the wasm passability cache, so `evictDistant`
+   *  knows what there is to drop without re-deriving it from the debug map. */
+  private loaded = new Map<string, { rx: number; rz: number }>()
   private changeListeners: (() => void)[] = []
 
   private cacheKey(rx: number, rz: number): string {
@@ -63,10 +67,38 @@ class FurnitureManager {
     }
     if (debug && debug.length > 0) {
       this.regionDebug.set(key, debug)
+      this.loaded.set(key, { rx, rz })
     } else {
+      // No solid furniture: the wasm setter removed the entry rather than
+      // inserting an empty one, so there is nothing left to track either.
       this.regionDebug.delete(key)
+      this.loaded.delete(key)
     }
     this.notifyChanged()
+  }
+
+  /**
+   * Drop cached regions more than one region away from (rx, rz).
+   *
+   * Only the region under the player is ever loaded, so without this the cache
+   * grows by one entry per region visited and never shrinks — every movement
+   * check then scans regions the player left long ago. The 8 neighbours are
+   * kept deliberately: a region is 1024m, and evicting the one just crossed out
+   * of would drop the collision for furniture sitting right across the boundary
+   * while the server (which holds every region) still blocks it — predicted
+   * movement would disagree with the server exactly at region seams.
+   */
+  evictDistant(rx: number, rz: number): void {
+    let removed = false
+    for (const [key, region] of this.loaded) {
+      if (Math.abs(region.rx - rx) <= 1 && Math.abs(region.rz - rz) <= 1)
+        continue
+      passability_remove_furniture(key)
+      this.regionDebug.delete(key)
+      this.loaded.delete(key)
+      removed = true
+    }
+    if (removed) this.notifyChanged()
   }
 
   /** All sealed furniture pieces across loaded regions, for the debug overlay. */

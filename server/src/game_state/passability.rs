@@ -118,8 +118,11 @@ impl super::GameState {
                 .insert(dungeon_cache_key(&def.id), rp);
             dungeons += 1;
         }
+        // Counts are cache entries, not files scanned: most region files hold
+        // only decorative objects and seal nothing.
         info!(
-            "Passability cache ready: {} houses, {} furniture regions, {} dungeons",
+            "Passability cache ready: {} entries ({} houses, {} furniture regions, {} dungeons)",
+            houses.len() + regions + dungeons,
             houses.len(),
             regions,
             dungeons
@@ -160,8 +163,9 @@ impl super::GameState {
             match tokio::fs::read_to_string(&path).await {
                 Ok(content) => match serde_json::from_str::<RegionObjects>(&content) {
                     Ok(objs) => {
-                        self.sync_region_furniture(rx, rz, &objs.placements);
-                        count += 1;
+                        if self.sync_region_furniture(rx, rz, &objs.placements) {
+                            count += 1;
+                        }
                     }
                     Err(e) => warn!("Bad region objects file {:?}: {}", path, e),
                 },
@@ -189,15 +193,24 @@ impl super::GameState {
 
     /// Mirror of the client's `passability_set_furniture` for one region:
     /// solid placements become sealed cells, empty regions clear the entry.
-    pub fn sync_region_furniture(&self, rx: i32, rz: i32, placements: &[FurniturePlacement]) {
+    /// Returns whether the region left an entry behind — most regions hold only
+    /// decorative objects and contribute nothing.
+    pub fn sync_region_furniture(
+        &self,
+        rx: i32,
+        rz: i32,
+        placements: &[FurniturePlacement],
+    ) -> bool {
         let key = furniture::region_cache_key(rx, rz);
         let mut cache = self.passability_write();
         match furniture::build_furniture_passability_for_placements(placements) {
             Some(rp) => {
                 cache.insert(key, rp);
+                true
             }
             None => {
                 cache.remove(&key);
+                false
             }
         }
     }

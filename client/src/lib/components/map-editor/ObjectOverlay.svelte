@@ -110,6 +110,9 @@
     // syncs furniture for lastLoadedRegion (== rx,rz here) — no direct call needed.
     currentObjectData.set(data)
     bridgeManager.syncRegion(data.placements, catalogById)
+    // Sync first, evict after: the new region is in place before its distant
+    // neighbours go, so collision is never momentarily absent underfoot.
+    furnitureManager.evictDistant(rx, rz)
   }
 
   $effect(() => {
