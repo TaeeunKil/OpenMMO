@@ -16,6 +16,7 @@ trap 'rm -f "$0"' EXIT
 REPO=${REPO:-$HOME/work/OnlineRPG}
 WEBROOT=${WEBROOT:-/var/www/openmmo}
 SERVICE=${SERVICE:-openmmo-server}
+AGENT_SERVICE=${AGENT_SERVICE:-openmmo-agent-client}
 
 cd "$REPO"
 
@@ -33,6 +34,9 @@ git lfs pull
 
 echo "==> server (release)"
 cargo build --release -p onlinerpg-server
+
+echo "==> agent client (release)"
+cargo build --release -p agent-client
 
 echo "==> client deps"
 (cd client && npm ci)
@@ -57,5 +61,17 @@ echo "==> restart $SERVICE"
 sudo systemctl restart "$SERVICE"
 sleep 3
 sudo systemctl is-active "$SERVICE"
+
+# The NPCs reconnect to a restarted server on their own, but their binary just
+# changed too. Not every host runs them, so skip when the unit is absent.
+if systemctl cat "$AGENT_SERVICE.service" >/dev/null 2>&1; then
+    echo "==> restart $AGENT_SERVICE"
+    sudo systemctl restart "$AGENT_SERVICE"
+    sleep 3
+    # A dead agent client (expired codex login, LLM outage) must not fail the
+    # deploy — the game itself is already live at this point.
+    sudo systemctl is-active "$AGENT_SERVICE" ||
+        echo "warning: $AGENT_SERVICE is not running — check 'journalctl -u $AGENT_SERVICE'" >&2
+fi
 
 echo "==> deployed $(git log --oneline -1)"
