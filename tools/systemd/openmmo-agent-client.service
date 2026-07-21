@@ -1,0 +1,40 @@
+[Unit]
+Description=OpenMMO agent client (LLM-driven NPCs)
+Documentation=https://github.com/Julian-adv/OpenMMO
+# Ordering only, no Requires= — the NPCs reconnect on their own, so a server
+# restart should not tear them down mid-session.
+After=network-online.target openmmo-server.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+# CONFIG_PATH is data/config.toml relative to CWD, and npc_token resolves to
+# ../data/npc_token — so CWD must be the agent-client dir, not the repo root.
+WorkingDirectory=/home/ubuntu/work/OnlineRPG/agent-client
+Environment=HOME=/home/ubuntu
+# codex lives in the nvm node bindir, which is not on the default unit PATH.
+# Bumping the node version means updating this line.
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v25.2.1/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/openmmo/agent-client.env
+ExecStart=/home/ubuntu/work/OnlineRPG/target/release/agent-client
+
+Restart=always
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openmmo-agent
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
