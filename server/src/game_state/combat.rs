@@ -633,8 +633,7 @@ impl super::GameState {
             for (player_id, player) in players.iter() {
                 // Only regenerate if alive and wounded
                 if player.health > 0 && player.health < player.max_health {
-                    // Check if player is "out of combat" (10s threshold = 10000ms)
-                    if now.saturating_sub(player.last_combat_at) < 10000 {
+                    if now.saturating_sub(player.last_combat_at) < super::OUT_OF_COMBAT_MS {
                         continue;
                     }
 

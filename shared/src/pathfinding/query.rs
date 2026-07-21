@@ -100,7 +100,9 @@ pub fn is_movement_blocked(
     floor_level: u8,
     y: Option<f32>,
 ) -> bool {
-    blocking_entry(cache, from_x, from_z, to_x, to_z, floor_level, y).is_some()
+    blocking_entries(cache, from_x, from_z, to_x, to_z, floor_level, y)
+        .next()
+        .is_some()
 }
 
 /// Why a move was refused: which cache entry, and whether the stairwell
@@ -113,22 +115,6 @@ pub struct BlockInfo<'a> {
     pub key: &'a str,
     pub stairwell: bool,
     pub consulted: usize,
-}
-
-/// Same check as [`is_movement_blocked`], but reports what refused the move.
-/// Diagnostics only — the hot path uses the bool wrapper.
-pub fn blocking_entry<'a>(
-    cache: &'a PassabilityCache,
-    from_x: f32,
-    from_z: f32,
-    to_x: f32,
-    to_z: f32,
-    floor_level: u8,
-    y: Option<f32>,
-) -> Option<BlockInfo<'a>> {
-    blocking_entries(cache, from_x, from_z, to_x, to_z, floor_level, y)
-        .next()
-        .map(|(_, info)| info)
 }
 
 /// Every cache entry that refuses this move, paired with its verdict.
@@ -211,7 +197,8 @@ pub(crate) fn is_cell_sealed(
     })
 }
 
-/// [`blocking_entry`], minus refusals that would trap a mover for good.
+/// [`is_movement_blocked`], minus refusals that would trap a mover for good,
+/// reporting what refused the move.
 ///
 /// Furniture seals the cells it covers, and nothing stops a piece from being
 /// placed over a standing player — a bed swallows its whole footprint this way.

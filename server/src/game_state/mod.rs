@@ -66,6 +66,10 @@ mod tests;
 
 pub(crate) const EVENT_DELIVERY_RADIUS: f32 = onlinerpg_shared::EVENT_DELIVERY_RADIUS;
 
+/// How long after the last hit a player still counts as in combat. Gates health
+/// regeneration and `/escape` alike, so escaping can't cut a fight short.
+pub(crate) const OUT_OF_COMBAT_MS: u64 = 10_000;
+
 /// Item def id for the loose-coin pickup spilled by an opened dungeon chest
 /// prop. It never enters a bag — picking it up credits a few copper straight
 /// to the player's wallet (see `pickup_item`).

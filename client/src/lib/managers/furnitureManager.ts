@@ -24,11 +24,12 @@ export interface FurnitureDebugPiece {
  * pieces for the passability overlay.
  */
 class FurnitureManager {
-  /** Per-region sealed pieces, for the debug overlay. */
-  private regionDebug = new Map<string, FurnitureDebugPiece[]>()
-  /** Regions currently held in the wasm passability cache, so `evictDistant`
-   *  knows what there is to drop without re-deriving it from the debug map. */
-  private loaded = new Map<string, { rx: number; rz: number }>()
+  /** Regions currently held in the wasm passability cache, with their sealed
+   *  pieces for the debug overlay. */
+  private regions = new Map<
+    string,
+    { rx: number; rz: number; pieces: FurnitureDebugPiece[] }
+  >()
   private changeListeners: (() => void)[] = []
 
   private cacheKey(rx: number, rz: number): string {
@@ -66,36 +67,26 @@ class FurnitureManager {
       return
     }
     if (debug && debug.length > 0) {
-      this.regionDebug.set(key, debug)
-      this.loaded.set(key, { rx, rz })
+      this.regions.set(key, { rx, rz, pieces: debug })
     } else {
       // No solid furniture: the wasm setter removed the entry rather than
       // inserting an empty one, so there is nothing left to track either.
-      this.regionDebug.delete(key)
-      this.loaded.delete(key)
+      this.regions.delete(key)
     }
     this.notifyChanged()
   }
 
-  /**
-   * Drop cached regions more than one region away from (rx, rz).
-   *
-   * Only the region under the player is ever loaded, so without this the cache
-   * grows by one entry per region visited and never shrinks — every movement
-   * check then scans regions the player left long ago. The 8 neighbours are
-   * kept deliberately: a region is 1024m, and evicting the one just crossed out
-   * of would drop the collision for furniture sitting right across the boundary
-   * while the server (which holds every region) still blocks it — predicted
-   * movement would disagree with the server exactly at region seams.
-   */
+  /** Drop cached regions more than one region away from (rx, rz), so the cache
+   *  stops growing by one entry per region visited. The 8 neighbours are kept
+   *  so furniture just across a boundary still collides — otherwise predicted
+   *  movement would disagree with the server at region seams. */
   evictDistant(rx: number, rz: number): void {
     let removed = false
-    for (const [key, region] of this.loaded) {
+    for (const [key, region] of this.regions) {
       if (Math.abs(region.rx - rx) <= 1 && Math.abs(region.rz - rz) <= 1)
         continue
       passability_remove_furniture(key)
-      this.regionDebug.delete(key)
-      this.loaded.delete(key)
+      this.regions.delete(key)
       removed = true
     }
     if (removed) this.notifyChanged()
@@ -104,7 +95,7 @@ class FurnitureManager {
   /** All sealed furniture pieces across loaded regions, for the debug overlay. */
   getDebugPieces(): FurnitureDebugPiece[] {
     const all: FurnitureDebugPiece[] = []
-    for (const pieces of this.regionDebug.values()) all.push(...pieces)
+    for (const region of this.regions.values()) all.push(...region.pieces)
     return all
   }
 

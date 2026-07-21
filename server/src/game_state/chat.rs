@@ -2,10 +2,6 @@ use crate::types::{PlayerId, ServerMessage};
 use crate::world_config::world_config;
 use tracing::{info, warn};
 
-/// Matches the out-of-combat threshold used by health regeneration, so
-/// `/escape` can't be used to break off a fight.
-const ESCAPE_COMBAT_LOCKOUT_MS: u64 = 10_000;
-
 impl super::GameState {
     pub async fn send_chat_message(&self, player_id: &PlayerId, message: String) {
         if message.trim() == "/escape" {
@@ -79,7 +75,7 @@ impl super::GameState {
                 warn!("/escape from non-existent player: {}", player_id);
                 return;
             };
-            Self::now_ms().saturating_sub(player.last_combat_at) < ESCAPE_COMBAT_LOCKOUT_MS
+            Self::now_ms().saturating_sub(player.last_combat_at) < super::OUT_OF_COMBAT_MS
         };
         if in_combat {
             self.send_direct_message(player_id, reply("Escape: not while in combat."))

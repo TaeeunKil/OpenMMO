@@ -28,16 +28,14 @@ pub use cache::{
     FurniturePiece,
 };
 pub use query::{
-    blocking_entry, blocking_entry_for_mover, get_floor_at_position, get_floor_y_base,
-    is_cardinal_move_blocked, is_circle_blocked_on_floor, is_movement_blocked,
-    is_movement_blocked_for_mover, BlockInfo,
+    blocking_entry_for_mover, get_floor_at_position, get_floor_y_base, is_cardinal_move_blocked,
+    is_circle_blocked_on_floor, is_movement_blocked, is_movement_blocked_for_mover, BlockInfo,
 };
 pub use smooth::find_and_smooth_path;
 
 use std::collections::HashMap;
 
-/// The four cardinal neighbours, shared by A* expansion and the trapped-mover
-/// seal check so the two cannot disagree about which cells adjoin.
+/// The four cardinal neighbours.
 pub(super) const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
 // Edge bitmask constants (matches TypeScript EDGE_N/E/S/W)
@@ -80,12 +78,8 @@ pub struct RuntimePassability {
     pub max_z: f32,
     pub floors: Vec<RuntimeFloorGrid>,
     pub stairwells: Vec<StairwellInfo>,
-    /// Whether this obstacle lets a mover it has sealed in step back out.
-    ///
-    /// True only for furniture, which is the one kind that can appear on top of
-    /// a standing player — dropped by the editor, or synced in as the region
-    /// streams to someone already there. A building's shell never yields, so a
-    /// sealed mover walks out across the furniture and stops at the walls.
+    /// Whether this obstacle lets a mover it has sealed in step back out. True
+    /// only for furniture, the one kind that can land on a standing player.
     /// See `query::blocking_entry_for_mover`.
     pub yields_to_trapped_mover: bool,
 }
