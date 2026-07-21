@@ -5,6 +5,7 @@ import {
 } from '../components/game-scene/terrain-utils'
 import type { HouseData } from '../types/housing'
 import type { WallDirection } from '../utils/house-geometry'
+import { shortestWrappedDeltaX } from '../terrain/world-wrap'
 import {
   ALL_WALL_DIRS,
   buildPassability,
@@ -42,6 +43,14 @@ function chunkKey(cx: number, cz: number): string {
   return `${cx},${cz}`
 }
 
+/** Chunks loaded around the player, as a Chebyshev radius (so 1 = a 3x3 block). */
+const LOAD_RADIUS = 1
+/** Wider than `LOAD_RADIUS` so loitering on a chunk boundary can't thrash a
+ *  chunk in and out. Also keeps the house a player stands in safe without a
+ *  special case: houses reach ~14 m from their origin against a 64 m chunk, so
+ *  the one you are inside is always within a chunk of you. */
+const EVICT_RADIUS = 2
+
 export class HousingManager {
   private apiUrl: string
   private chunkCache = new Map<string, HouseData[]>()
@@ -64,8 +73,15 @@ export class HousingManager {
     this.apiUrl = getTerrainApiUrl()
   }
 
+  /** Bring the streamed set in line with the player's position. Owns the
+   *  load-then-evict ordering so collision is never momentarily absent. */
+  updateStreaming(wx: number, wz: number) {
+    this.loadChunksAround(wx, wz)
+    this.evictDistantChunks(wx, wz)
+  }
+
   /** Load houses for chunks around a world position. */
-  loadChunksAround(wx: number, wz: number, radius: number = 1) {
+  loadChunksAround(wx: number, wz: number, radius: number = LOAD_RADIUS) {
     const { x: ccx, z: ccz } = getTerrainChunkFromPosition(
       { x: wx, y: 0, z: wz },
       TERRAIN_TILE_SIZE
@@ -75,6 +91,47 @@ export class HousingManager {
         this.ensureChunkLoaded(ccx + dx, ccz + dz)
       }
     }
+  }
+
+  /**
+   * Drop chunks beyond `EVICT_RADIUS` of (wx, wz), undoing `loadChunksAround`.
+   * Without this the cache grows by one chunk per chunk walked and never
+   * shrinks. See `doc/RUNTIME_PERFORMANCE.md` for why the radius is what it is.
+   */
+  evictDistantChunks(wx: number, wz: number) {
+    const { x: ccx, z: ccz } = getTerrainChunkFromPosition(
+      { x: wx, y: 0, z: wz },
+      TERRAIN_TILE_SIZE
+    )
+    const centreX = ccx * TERRAIN_TILE_SIZE
+    const reach = EVICT_RADIUS * TERRAIN_TILE_SIZE
+
+    let removed = false
+    for (const [key, houses] of this.chunkCache) {
+      const [cx, cz] = key.split(',').map(Number)
+      // X wraps: the world is a cylinder, so a chunk can be adjacent across
+      // the seam despite a large index difference.
+      const dx = shortestWrappedDeltaX(cx * TERRAIN_TILE_SIZE, centreX)
+      if (Math.abs(dx) <= reach && Math.abs(cz - ccz) <= EVICT_RADIUS) continue
+
+      for (const house of houses) {
+        this.housesById.delete(house.id)
+        passability_remove_house(house.id)
+      }
+      // Drop the key itself, not just its houses: `ensureChunkLoaded` treats a
+      // present key as "already loaded" and would never refetch the chunk.
+      this.chunkCache.delete(key)
+      removed = true
+    }
+    if (removed) this.notifyChanged()
+  }
+
+  private chunkOf(house: HouseData): string {
+    const { x, z } = getTerrainChunkFromPosition(
+      house.origin,
+      TERRAIN_TILE_SIZE
+    )
+    return chunkKey(x, z)
   }
 
   private ensureChunkLoaded(cx: number, cz: number) {
@@ -382,11 +439,7 @@ export class HousingManager {
 
   private addToCache(house: HouseData) {
     this.housesById.set(house.id, house)
-    const { x: cx, z: cz } = getTerrainChunkFromPosition(
-      house.origin,
-      TERRAIN_TILE_SIZE
-    )
-    const key = chunkKey(cx, cz)
+    const key = this.chunkOf(house)
     const chunk = this.chunkCache.get(key)
     if (chunk) {
       const idx = chunk.findIndex((h) => h.id === house.id)
@@ -411,12 +464,7 @@ export class HousingManager {
     if (!house) return
     this.housesById.delete(houseId)
     passability_remove_house(houseId)
-    const { x: cx, z: cz } = getTerrainChunkFromPosition(
-      house.origin,
-      TERRAIN_TILE_SIZE
-    )
-    const key = chunkKey(cx, cz)
-    const chunk = this.chunkCache.get(key)
+    const chunk = this.chunkCache.get(this.chunkOf(house))
     if (chunk) {
       const idx = chunk.findIndex((h) => h.id === houseId)
       if (idx >= 0) chunk.splice(idx, 1)

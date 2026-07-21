@@ -62,11 +62,40 @@ comparisons/sec total.
 
 ### Related fix
 
-The browser loads one furniture region at a time and never dropped the rest, so
-its cache grew per region visited. `furnitureManager.evictDistant` now keeps the
-current region **plus its 8 neighbours** — evicting the region just crossed out
-of would drop collision for furniture right across a boundary that the server
-still blocks, desyncing prediction at region seams.
+The entry counts above are the server's. The **browser** streamed content in as
+the player walked and never dropped any of it, so its copy of the cache grew
+without bound — the one place entry count did scale with play time.
+
+- **Furniture.** One region is loaded at a time. `furnitureManager.evictDistant`
+  keeps the current region **plus its 8 neighbours** — evicting the region just
+  crossed out of would drop collision for furniture right across a boundary that
+  the server still blocks, desyncing prediction at region seams.
+- **Houses.** The larger axis: `loadChunksAround` streams a 3x3 terrain-chunk
+  neighbourhood, and `passability_remove_house` only ever ran on explicit
+  delete, so crossing a town leaked one entry per house for the whole session.
+  `housingManager.evictDistantChunks` sweeps at **radius 2**, one chunk wider
+  than the load radius so a player loitering on a boundary can't thrash a chunk
+  in and out. It drops the `chunkCache` key itself, not just the houses in it —
+  `ensureChunkLoaded` reads a present key as "already loaded" and would
+  otherwise never refetch. Since nothing inside a fresh spawn's 3x3 load is ever
+  dropped, this can't show less than spawning in place would.
+
+Dungeons already self-evict by distance (`dungeonManager.updateAutoRegister`,
+gated on being back on the surface).
+
+Two things did **not** generalise, for different reasons:
+
+- **The sweep itself.** A shared Rust-side pass over the wasm cache would
+  desync all three producers: each keeps a JS-side "already loaded" guard —
+  `chunkCache.has(key)`, `lastLoadedRegion`, `dungeonManager.id` — that a silent
+  removal from wasm never clears, stranding the content unloadable for the rest
+  of the session. Eviction has to run through the manager that owns the guard.
+- **The load/evict pairing.** This one is a convention rather than shared code:
+  each streaming producer exposes *one* position-driven entry point that owns
+  its own ordering — `housingManager.updateStreaming`,
+  `dungeonManager.updateFromPlayerPosition`. Leaving callers to pair the two
+  halves is how the "load first, evict after" rule ended up rediscovered and
+  re-commented at each call site.
 
 ## Round 2 (2026-04-09)
 

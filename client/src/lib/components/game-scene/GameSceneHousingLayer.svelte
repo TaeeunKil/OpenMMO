@@ -279,7 +279,7 @@
     if (cx !== lastChunkX || cz !== lastChunkZ) {
       lastChunkX = cx
       lastChunkZ = cz
-      housingManager.loadChunksAround(playerPosition.x, playerPosition.z)
+      housingManager.updateStreaming(playerPosition.x, playerPosition.z)
     }
 
     // Player-inside detection (per-room, floor-aware)
@@ -596,7 +596,7 @@
    *  the loading screen is dismissed. Without this, chunk data arrives during
    *  gameplay and the first render of each house stalls WebGPU. */
   export async function preloadChunks(px: number, pz: number) {
-    housingManager.loadChunksAround(px, pz)
+    housingManager.updateStreaming(px, pz)
     await housingManager.waitForPending()
   }
 
