@@ -4,6 +4,7 @@ import {
   applyKeyboardMovement,
   applyKeyboardMovementOutcome,
   createKeyboardMoveSender,
+  createKeyboardSpeedRamp,
   createKeyboardTapTracker,
   runKeyboardFrame,
   KEYBOARD_TAP_STEP,
@@ -16,6 +17,8 @@ function makeInput() {
     currentPos: { x: 0, y: 1, z: 0 },
     direction: { x: 1, z: 0 },
     config: DEFAULT_MOVEMENT_CONFIG,
+    deltaTimeSeconds: 1 / 64,
+    speedRamp: makeSpeedRamp(),
     sampleHeight: vi.fn((x: number, z: number) => x + z),
     isMovementBlocked: vi.fn(() => false),
     isUphillTooSteep: vi.fn(() => false),
@@ -56,6 +59,10 @@ function makeMoveSender() {
   return { step: vi.fn(), flush: vi.fn(), reset: vi.fn() }
 }
 
+function makeSpeedRamp(speed = 3) {
+  return { advance: vi.fn(() => speed), reset: vi.fn() }
+}
+
 const movementDeps = {
   config: {
     maxSpeed: 3,
@@ -63,27 +70,55 @@ const movementDeps = {
     deceleration: 6,
     arrivalThreshold: 0.05,
   },
+  deltaTimeSeconds: 1 / 64,
+  isKeyboardMoving: false,
   sampleHeight: () => 0,
   isMovementBlocked: () => false,
   isUphillTooSteep: () => false,
   writePlayerPosition: vi.fn(),
   tapTracker: makeTapTracker(),
+  speedRamp: makeSpeedRamp(),
 }
 
 describe('applyKeyboardMovement', () => {
-  it('moves at fixed keyboard step and sends the new position', () => {
+  it('moves by maxSpeed × frame delta and sends the new position', () => {
     const input = makeInput()
 
     const outcome = applyKeyboardMovement(input)
 
     expect(outcome.kind).toBe('moved')
     expect(input.writePlayerPosition).toHaveBeenCalledWith(
-      { x: 0.025, y: 0.025, z: 0 },
+      { x: 0.046875, y: 0.046875, z: 0 },
       Math.PI / 2
     )
     expect(input.sendPlayerMove).toHaveBeenCalledWith(
-      { x: 0.025, y: 0.025, z: 0 },
+      { x: 0.046875, y: 0.046875, z: 0 },
       Math.PI / 2
+    )
+  })
+
+  it('clamps oversized frame deltas to a 100ms step', () => {
+    const input = makeInput()
+    input.deltaTimeSeconds = 1
+
+    const outcome = applyKeyboardMovement(input)
+
+    expect(outcome.kind).toBe('moved')
+    expect(input.writePlayerPosition).toHaveBeenCalledWith(
+      { x: 3 * 0.1, y: 3 * 0.1, z: 0 },
+      Math.PI / 2
+    )
+  })
+
+  it('advances the speed ramp with the clamped frame delta', () => {
+    const input = makeInput()
+    input.deltaTimeSeconds = 1
+
+    applyKeyboardMovement(input)
+
+    expect(input.speedRamp.advance).toHaveBeenCalledExactlyOnceWith(
+      DEFAULT_MOVEMENT_CONFIG,
+      0.1
     )
   })
 
@@ -107,6 +142,25 @@ describe('applyKeyboardMovement', () => {
     expect(outcome.kind).toBe('slope_blocked')
     expect(input.writePlayerPosition).not.toHaveBeenCalled()
     expect(input.sendPlayerMove).not.toHaveBeenCalled()
+  })
+})
+
+describe('createKeyboardSpeedRamp', () => {
+  it('accelerates to maxSpeed and restarts after reset', () => {
+    const ramp = createKeyboardSpeedRamp()
+    const config = {
+      maxSpeed: 3,
+      acceleration: 6,
+      deceleration: 6,
+      arrivalThreshold: 0.05,
+    }
+
+    expect(ramp.advance(config, 0.25)).toBeCloseTo(1.5)
+    expect(ramp.advance(config, 0.25)).toBeCloseTo(3)
+    expect(ramp.advance(config, 0.25)).toBeCloseTo(3)
+
+    ramp.reset()
+    expect(ramp.advance(config, 0.25)).toBeCloseTo(1.5)
   })
 })
 
@@ -254,6 +308,48 @@ describe('runKeyboardFrame', () => {
 
     expect(moveSender.flush).toHaveBeenCalledExactlyOnceWith(position)
     expect(moveSender.reset).not.toHaveBeenCalled()
+  })
+
+  it('settles keyboard_moving to idle on release without a tap target', () => {
+    const a = frameActions()
+    const moveSender = makeMoveSender()
+    const position = { x: 3, y: 0, z: 4 }
+
+    runKeyboardFrame({
+      currentPlayer: { position },
+      hasKeysPressed: false,
+      interactionExit: 'none',
+      hasMovementTarget: false,
+      isInCombat: false,
+      direction: null,
+      actions: a,
+      ...movementDeps,
+      isKeyboardMoving: true,
+      moveSender,
+    })
+
+    expect(a.setKeyboardIdleRuntime).toHaveBeenCalledOnce()
+    expect(a.emitKeyboardPlayerState).toHaveBeenCalledOnce()
+    expect(moveSender.flush).toHaveBeenCalledExactlyOnceWith(position)
+  })
+
+  it('does not force idle from other states on idle frames', () => {
+    const a = frameActions()
+
+    runKeyboardFrame({
+      currentPlayer: { position: { x: 3, y: 0, z: 4 } },
+      hasKeysPressed: false,
+      interactionExit: 'none',
+      hasMovementTarget: false,
+      isInCombat: false,
+      direction: null,
+      actions: a,
+      ...movementDeps,
+      moveSender: makeMoveSender(),
+    })
+
+    expect(a.setKeyboardIdleRuntime).not.toHaveBeenCalled()
+    expect(a.emitKeyboardPlayerState).not.toHaveBeenCalled()
   })
 
   it('resets without sending when a click path owns the movement queue', () => {

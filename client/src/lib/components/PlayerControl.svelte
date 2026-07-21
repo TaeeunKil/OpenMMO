@@ -61,6 +61,7 @@
   } from './player-control/fsm/move-request'
   import {
     createKeyboardMoveSender,
+    createKeyboardSpeedRamp,
     createKeyboardTapTracker,
     runKeyboardFrame,
   } from './player-control/fsm/keyboard'
@@ -382,6 +383,7 @@
 
   const keyboardMoveSender = createKeyboardMoveSender(sendPlayerMove)
   const keyboardTapTracker = createKeyboardTapTracker()
+  const keyboardSpeedRamp = createKeyboardSpeedRamp()
 
   function writePlayerPosition(position: Position, rotation: number) {
     const wrappedX = wrapWorldX(position.x)
@@ -731,21 +733,24 @@
     })
   }
 
-  function updateKeyboardMovement() {
+  function updateKeyboardMovement(deltaTime: number) {
     runKeyboardFrame({
       currentPlayer,
       hasKeysPressed: inputHandler.hasKeysPressed,
+      isKeyboardMoving: playerControlMachine.stateName === 'keyboard_moving',
       interactionExit: getInteractionExitKind(playerState),
       hasMovementTarget: movingState() !== null,
       isInCombat: combatController.isInCombat,
       direction: inputHandler.getMovementDirection(),
       config: MOVEMENT_CONFIG,
+      deltaTimeSeconds: deltaTime / 1000,
       sampleHeight,
       isMovementBlocked,
       isUphillTooSteep,
       writePlayerPosition,
       moveSender: keyboardMoveSender,
       tapTracker: keyboardTapTracker,
+      speedRamp: keyboardSpeedRamp,
       actions: keyboardFrameActions,
     })
   }

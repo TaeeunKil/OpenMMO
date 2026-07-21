@@ -106,7 +106,7 @@ export function createKeyboardTapTracker(): KeyboardTapTracker {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Keyboard movement integrator (fixed-step, no accel/decel/waypoints)
+// Keyboard movement integrator (delta-time step with accel ramp, no waypoints)
 // ───────────────────────────────────────────────────────────────────────────
 
 export interface KeyboardDirection {
@@ -114,10 +114,35 @@ export interface KeyboardDirection {
   z: number
 }
 
+// Session-scoped speed ramp so keyboard starts match the click-move
+// acceleration curve instead of snapping to full speed.
+export interface KeyboardSpeedRamp {
+  advance(config: MovementConfig, deltaTimeSeconds: number): number
+  reset(): void
+}
+
+export function createKeyboardSpeedRamp(): KeyboardSpeedRamp {
+  let speed = 0
+  return {
+    advance(config, deltaTimeSeconds) {
+      speed = Math.min(
+        speed + config.acceleration * deltaTimeSeconds,
+        config.maxSpeed
+      )
+      return speed
+    },
+    reset() {
+      speed = 0
+    },
+  }
+}
+
 interface KeyboardMovementInput {
   currentPos: Position
   direction: KeyboardDirection
   config: MovementConfig
+  deltaTimeSeconds: number
+  speedRamp: KeyboardSpeedRamp
   sampleHeight: (x: number, z: number) => number
   isMovementBlocked: (
     fromX: number,
@@ -150,14 +175,18 @@ export function applyKeyboardMovement({
   currentPos,
   direction,
   config,
+  deltaTimeSeconds,
+  speedRamp,
   sampleHeight,
   isMovementBlocked,
   isUphillTooSteep,
   writePlayerPosition,
   sendPlayerMove,
 }: KeyboardMovementInput): KeyboardMovementOutcome {
-  const currentSpeed = config.maxSpeed
-  const speed = config.maxSpeed * (1000 / 120 / 1000)
+  // Clamp tab-switch delta spikes so one frame can't teleport the player.
+  const dt = Math.min(deltaTimeSeconds, 0.1)
+  const currentSpeed = speedRamp.advance(config, dt)
+  const speed = currentSpeed * dt
   const newX = currentPos.x + direction.x * speed
   const newZ = currentPos.z + direction.z * speed
 
@@ -253,11 +282,13 @@ export interface KeyboardFrameActions extends KeyboardMovementOutcomeActions {
 interface RunKeyboardFrameInput {
   currentPlayer: KeyboardFramePlayer | null
   hasKeysPressed: boolean
+  isKeyboardMoving: boolean
   interactionExit: InteractionExitKind
   hasMovementTarget: boolean
   isInCombat: boolean
   direction: KeyboardDirection | null
   config: MovementConfig
+  deltaTimeSeconds: number
   sampleHeight: (x: number, z: number) => number
   isMovementBlocked: (
     fromX: number,
@@ -276,27 +307,32 @@ interface RunKeyboardFrameInput {
   writePlayerPosition: (position: Position, rotation: number) => void
   moveSender: KeyboardMoveSender
   tapTracker: KeyboardTapTracker
+  speedRamp: KeyboardSpeedRamp
   actions: KeyboardFrameActions
 }
 
 export function runKeyboardFrame({
   currentPlayer,
   hasKeysPressed,
+  isKeyboardMoving,
   interactionExit,
   hasMovementTarget,
   isInCombat,
   direction,
   config,
+  deltaTimeSeconds,
   sampleHeight,
   isMovementBlocked,
   isUphillTooSteep,
   writePlayerPosition,
   moveSender,
   tapTracker,
+  speedRamp,
   actions,
 }: RunKeyboardFrameInput) {
   if (!currentPlayer || !hasKeysPressed) {
     const tapTarget = tapTracker.release(currentPlayer?.position ?? null)
+    speedRamp.reset()
     // Session over: a click-path or combat chase owns the movement queue now
     // (their replace supersedes us), so hand off without sending.
     if (!currentPlayer || hasMovementTarget || isInCombat) {
@@ -310,6 +346,12 @@ export function runKeyboardFrame({
       actions.requestMove(tapTarget)
     } else {
       moveSender.flush(currentPlayer.position)
+      // Long-hold release has no glide arrival to settle the machine, so it
+      // must leave keyboard_moving itself or the run animation loops forever.
+      if (isKeyboardMoving) {
+        actions.setKeyboardIdleRuntime()
+        actions.emitKeyboardPlayerState()
+      }
     }
     return
   }
@@ -342,6 +384,8 @@ export function runKeyboardFrame({
       },
       direction,
       config,
+      deltaTimeSeconds,
+      speedRamp,
       sampleHeight,
       isMovementBlocked,
       isUphillTooSteep,
@@ -360,6 +404,7 @@ export function runKeyboardFrame({
       return
     }
   } else {
+    speedRamp.reset()
     actions.setKeyboardIdleRuntime()
   }
 
