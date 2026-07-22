@@ -97,6 +97,10 @@ export const hoveredSignpost = writable<HoveredSignpost | null>(null)
 /** Set from JoinSuccess; unlocks debug/cheat UI (server re-validates). */
 export const isAdminUser = writable(false)
 
+/** Set from ServerNotice; cleared when the socket reopens. Kept out of
+ *  `gameStore` so the HUD banner doesn't resubscribe on every game update. */
+export const serverNotice = writable<string | null>(null)
+
 export const resetGameStore = () => {
   gameStore.set({
     ...initialGameState,

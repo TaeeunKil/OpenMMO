@@ -16,6 +16,7 @@
   import LoadingDialog from './LoadingDialog.svelte'
   import RespawnDialog from './RespawnDialog.svelte'
   import WorldMapDialog from './WorldMapDialog.svelte'
+  import ServerNotice from './ServerNotice.svelte'
   import {
     mapEditorMode,
     worldMapVisible,
@@ -62,6 +63,7 @@
 </script>
 
 <div class="game-hud">
+  <ServerNotice />
   <FPSCounter />
   <WavePhaseDebug />
   <GameTimeWidget />

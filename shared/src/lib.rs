@@ -27,7 +27,7 @@ pub const NPC_TOKEN_PATH_FROM_ROOT: &str = "data/npc_token";
 /// meaning changes: clients we cannot redeploy (agent-clients on other
 /// machines) must be refused with an "update me" notice rather than left to
 /// fail at a random later message. See `doc/REMOTE_AGENT_CLIENT.md`.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api;
@@ -328,6 +328,10 @@ mod tests {
                 player_id: 1.into(),
                 reason: "test".to_string(),
             },
+            ServerMessage::ServerNotice {
+                message: Some("restart soon".to_string()),
+            },
+            ServerMessage::ServerNotice { message: None },
         ];
         for msg in messages {
             let bytes = serialize_server_msg(&msg).unwrap();

@@ -216,6 +216,10 @@ Prod runs both binaries as systemd units (`tools/systemd/`), with the client bun
 
 Deploy by running `tools/deploy-prod.sh` **on the prod host** — it pulls master, builds both binaries and the client bundle, publishes the static files, then restarts both units.
 
+The server handles systemd's `SIGTERM` gracefully: it shows connected players a restart notice, closes its listeners and periodic tasks, waits for any in-flight batch save, persists every connected character and inventory plus the world clock, then exits. `systemctl restart` waits for that drain before starting the new binary.
+
+Admin characters can use `/notice <message>` to raise the same banner by hand (this is the live in-game banner, not the login-screen announcements served from `data/announcements/`). `/notice` with no message clears it; players who enter while one is active receive it on join.
+
 Over SSH, detach it from the session so a dropped connection cannot kill the build midway:
 
 ```bash

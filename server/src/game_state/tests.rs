@@ -342,6 +342,50 @@ async fn who_command_reports_online_counts_only_to_the_requester() {
     }
 }
 
+#[test]
+fn notice_command_sets_or_clears_message() {
+    use super::parse_notice_command;
+
+    assert_eq!(
+        parse_notice_command("/notice Server maintenance"),
+        Some(Some("Server maintenance"))
+    );
+    assert_eq!(parse_notice_command(" /notice "), Some(None));
+    assert_eq!(parse_notice_command("/noticeboard"), None);
+}
+
+#[tokio::test]
+async fn server_notice_is_stored_broadcast_and_clearable() {
+    let game_state = make_test_game_state("server_notice");
+    let player_id = pid("notice_admin");
+    let mut receiver = game_state.subscribe();
+
+    game_state
+        .send_chat_message(&player_id, "/notice Server maintenance".to_string())
+        .await;
+    assert_eq!(
+        game_state.server_notice().await.as_deref(),
+        Some("Server maintenance")
+    );
+    let message = receiver.recv().await.expect("notice broadcast");
+    assert!(matches!(
+        rmp_serde::from_slice::<ServerMessage>(&message.bytes),
+        Ok(ServerMessage::ServerNotice {
+            message: Some(message)
+        }) if message == "Server maintenance"
+    ));
+
+    game_state
+        .send_chat_message(&player_id, "/notice".to_string())
+        .await;
+    assert_eq!(game_state.server_notice().await, None);
+    let message = receiver.recv().await.expect("notice clear broadcast");
+    assert!(matches!(
+        rmp_serde::from_slice::<ServerMessage>(&message.bytes),
+        Ok(ServerMessage::ServerNotice { message: None })
+    ));
+}
+
 #[tokio::test]
 async fn escape_command_returns_a_stuck_player_to_spawn() {
     let game_state = make_test_game_state("escape_to_spawn");
@@ -3084,14 +3128,18 @@ async fn kick_flushes_dropped_inventory_before_replacement_load() {
     let char_id = record.id;
 
     // DB snapshot before the drop: one sword in the bag.
-    auth.save_inventory(
-        char_id,
-        &[crate::auth::ItemRow {
-            item_def_id: "worn_iron_sword".to_string(),
-            quantity: 1,
-            equip_slot: None,
-            enchant: 0,
-        }],
+    auth.save_batch(
+        &[],
+        &[(
+            char_id,
+            vec![crate::auth::ItemRow {
+                item_def_id: "worn_iron_sword".to_string(),
+                quantity: 1,
+                equip_slot: None,
+                enchant: 0,
+            }],
+        )],
+        None,
     )
     .unwrap();
 

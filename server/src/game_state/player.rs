@@ -1,4 +1,4 @@
-use crate::auth::{AuthError, AuthService, CharacterSaveData};
+use crate::auth::{AuthError, AuthService, CharacterSaveData, ItemRow};
 use crate::types::{CharacterAttributes, Player, PlayerId, Position, ServerMessage};
 use crate::world_config::world_config;
 use onlinerpg_shared::{shortest_world_delta_x, wrap_world_x, PLAYER_MOVE_SPEED};
@@ -262,20 +262,107 @@ impl super::GameState {
     /// `player_characters`, so unregistering first would silently skip both
     /// saves while still detaching the inventory.
     pub async fn persist_and_detach_player(&self, player_id: &PlayerId, auth: &AuthService) {
+        let _persistence = self.persistence_lock.lock().await;
+
+        let mut characters = Vec::new();
         if let Some(save_data) = self.get_player_save_data(player_id).await {
             self.remove_dirty(player_id).await;
-            let auth = auth.clone();
-            flush_save(
-                move || auth.save_characters_batch(&[save_data]),
-                "character state",
-            )
-            .await;
+            characters.push(save_data);
+        }
+        let inventories = Vec::from_iter(self.take_player_inventory(player_id).await);
+
+        let auth = auth.clone();
+        flush_save(
+            move || auth.save_batch(&characters, &inventories, None),
+            "player state",
+        )
+        .await;
+    }
+
+    /// Persist every connected player plus the world clock in one transaction.
+    /// Used by the shutdown drain, where connections skip their own teardown so
+    /// 5,000 logouts don't become 5,000 commits.
+    pub async fn persist_shutdown_snapshot(&self, auth: &AuthService) {
+        let (characters, inventories) = self.collect_shutdown_snapshot().await;
+        let character_count = characters.len();
+        let inventory_count = inventories.len();
+        let datetime = self.current_game_datetime();
+        let auth = auth.clone();
+        flush_save(
+            move || {
+                auth.save_batch(&characters, &inventories, Some(&datetime))?;
+                info!(
+                    "Saved shutdown snapshot: {} character(s), {} inventory/inventories",
+                    character_count, inventory_count
+                );
+                Ok(())
+            },
+            "shutdown snapshot",
+        )
+        .await;
+    }
+
+    async fn collect_shutdown_snapshot(
+        &self,
+    ) -> (Vec<CharacterSaveData>, Vec<(i64, Vec<ItemRow>)>) {
+        let _persistence = self.persistence_lock.lock().await;
+        let players = self.players.read().await;
+        let player_characters = self.player_characters.read().await;
+        let player_gold = self.player_gold.read().await;
+        let inventories = self.inventories.read().await;
+
+        let mut characters = Vec::with_capacity(player_characters.len());
+        let mut inventory_rows = Vec::with_capacity(player_characters.len());
+
+        for (player_id, (character_id, xp, _)) in player_characters.iter() {
+            if let Some(player) = players.get(player_id) {
+                characters.push(build_save_data(
+                    player,
+                    *character_id,
+                    *xp,
+                    player_gold.get(player_id).copied().unwrap_or(0),
+                ));
+            }
+            if let Some(inventory) = inventories.get(player_id) {
+                inventory_rows.push((
+                    *character_id,
+                    super::inventory::serialize_inventory(inventory),
+                ));
+            }
         }
 
-        if let Some((char_id, items)) = self.take_player_inventory(player_id).await {
-            let auth = auth.clone();
-            flush_save(move || auth.save_inventory(char_id, &items), "inventory").await;
+        characters.sort_by_key(|state| state.character_id);
+        inventory_rows.sort_by_key(|(character_id, _)| *character_id);
+        (characters, inventory_rows)
+    }
+
+    /// Write every dirty character state and inventory. Takes the same lock as
+    /// `persist_and_detach_player` so a periodic flush cannot interleave with a
+    /// logout's save.
+    pub async fn flush_dirty_saves(&self, auth: &AuthService) {
+        let _persistence = self.persistence_lock.lock().await;
+
+        let dirty_states = self.collect_dirty_character_states().await;
+        let dirty_inventories = self.collect_dirty_inventory_states().await;
+        if dirty_states.is_empty() && dirty_inventories.is_empty() {
+            return;
         }
+
+        let character_count = dirty_states.len();
+        let inventory_count = dirty_inventories.len();
+        let auth = auth.clone();
+        flush_save(
+            move || {
+                auth.save_batch(&dirty_states, &dirty_inventories, None)?;
+                info!(
+                    "Batch-saved {} character state(s), {} inventory/inventories",
+                    character_count, inventory_count
+                );
+                Ok(())
+            },
+            "dirty state",
+        )
+        .await;
     }
 
     pub async fn add_player(&self, mut player: Player) -> Option<ServerMessage> {

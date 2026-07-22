@@ -33,9 +33,14 @@ use std::sync::Arc;
 use terrain::io::TerrainIO;
 use terrain::routes::terrain_router;
 use tokio::net::TcpListener;
-use tokio::time::Duration;
+use tokio::sync::watch;
+use tokio::task::JoinSet;
+use tokio::time::{Duration, Instant};
 use tower_http::compression::CompressionLayer;
 use tracing::{error, info, warn};
+
+const SHUTDOWN_NOTICE: &str = "The server is shutting down. Please reconnect shortly.";
+const SHUTDOWN_NOTICE_DURATION: Duration = Duration::from_secs(2);
 
 /// Catches and logs a panic from one tick round so the loop task survives.
 async fn guard_tick(name: &str, tick: impl std::future::Future<Output = ()>) {
@@ -45,6 +50,28 @@ async fn guard_tick(name: &str, tick: impl std::future::Future<Output = ()>) {
         .is_err()
     {
         error!("{name} tick panicked; loop continues");
+    }
+}
+
+/// Runs `tick` every `period` until shutdown fires. Owning the loop is what
+/// makes every background task drainable: a task spawned any other way would
+/// never break, and the shutdown drain would hang on it forever.
+async fn run_ticks<F, Fut>(
+    name: &'static str,
+    period: Duration,
+    mut shutdown: watch::Receiver<()>,
+    mut tick: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let mut interval = tokio::time::interval(period);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            _ = interval.tick() => guard_tick(name, tick()).await,
+        }
     }
 }
 
@@ -61,50 +88,56 @@ async fn time_sync_tick(game_state: &GameState, auth_service: &Arc<AuthService>,
     // Pay NPC trader salaries on game-day rollover (economy phase 3)
     game_state.tick_npc_salaries().await;
 
-    // Batch-save dirty character states every 4 ticks (32 seconds)
+    // Batch-save dirty character states and inventories every 4 ticks (32s)
     if tick_count.is_multiple_of(4) {
-        let dirty_states = game_state.collect_dirty_character_states().await;
-        if !dirty_states.is_empty() {
-            let count = dirty_states.len();
-            let auth = Arc::clone(auth_service);
-            let handle = tokio::task::spawn_blocking(move || {
-                if let Err(e) = auth.save_characters_batch(&dirty_states) {
-                    warn!("Failed to batch-save character states: {}", e);
-                } else {
-                    info!("Batch-saved {} character state(s)", count);
-                }
-            });
-            tokio::spawn(async move {
-                if let Err(e) = handle.await {
-                    error!("Batch save task panicked: {}", e);
-                }
-            });
-        }
-
-        // Batch-save dirty inventories
-        let dirty_inventories = game_state.collect_dirty_inventory_states().await;
-        if !dirty_inventories.is_empty() {
-            let count = dirty_inventories.len();
-            let auth = Arc::clone(auth_service);
-            let handle = tokio::task::spawn_blocking(move || {
-                for (char_id, items) in &dirty_inventories {
-                    if let Err(e) = auth.save_inventory(*char_id, items) {
-                        warn!("Failed to save inventory for character {}: {}", char_id, e);
-                    }
-                }
-                info!("Batch-saved {} inventory/inventories", count);
-            });
-            tokio::spawn(async move {
-                if let Err(e) = handle.await {
-                    error!("Inventory batch save task panicked: {}", e);
-                }
-            });
-        }
+        game_state.flush_dirty_saves(auth_service).await;
     }
 
     let datetime = game_state.broadcast_game_time();
     if let Err(err) = auth_service.save_world_time(&datetime) {
         warn!("Failed to persist game time: {}", err);
+    }
+}
+
+async fn wait_for_shutdown(mut shutdown: watch::Receiver<()>) {
+    let _ = shutdown.changed().await;
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(signal) => signal,
+        Err(e) => {
+            error!("Failed to install SIGTERM handler: {}", e);
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(e) = result {
+                error!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
+        _ = terminate.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        error!("Failed to listen for Ctrl+C: {}", e);
+    }
+}
+
+async fn drain(tasks: &mut JoinSet<()>, name: &str) {
+    while let Some(result) = tasks.join_next().await {
+        if let Err(e) = result {
+            error!("{} task failed during shutdown: {}", name, e);
+        }
     }
 }
 
@@ -298,79 +331,78 @@ async fn main() {
     // Server-side collision data for the movement sim: houses, solid
     // furniture and dungeon layouts, mirroring what clients build.
     game_state.init_passability(&args.terrain_dir).await;
+    // Stops the listeners, the REST API and every periodic task; connections
+    // outlive it so players still see the shutdown notice.
+    let (drain_shutdown_tx, drain_shutdown) = watch::channel(());
+    let (connection_shutdown_tx, connection_shutdown) = watch::channel(());
+    let mut background = JoinSet::new();
+
     // Player movement simulation: walks pending move intents toward their
     // targets at capped speed (server-authoritative positions, F-006).
     let game_state_for_movement = Arc::clone(&game_state);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(200));
-        let mut last = std::time::Instant::now();
-        loop {
-            interval.tick().await;
+    let mut last = std::time::Instant::now();
+    background.spawn(run_ticks(
+        "player movement",
+        Duration::from_millis(200),
+        drain_shutdown.clone(),
+        move || {
             let now = std::time::Instant::now();
             let dt = (now - last).as_secs_f32();
             last = now;
-            guard_tick(
-                "player movement",
-                game_state_for_movement.tick_player_movement(dt),
-            )
-            .await;
-        }
-    });
+            let game_state = Arc::clone(&game_state_for_movement);
+            async move { game_state.tick_player_movement(dt).await }
+        },
+    ));
 
-    // Monster spawn tick task
+    // Every 10s, top up each player's ambient monsters toward their caps.
     let game_state_for_spawns = Arc::clone(&game_state);
-    tokio::spawn(async move {
-        // Every 10s, top up each player's ambient monsters toward their caps.
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            guard_tick("monster spawn", game_state_for_spawns.tick_monster_spawns()).await;
-        }
-    });
+    background.spawn(run_ticks(
+        "monster spawn",
+        Duration::from_secs(10),
+        drain_shutdown.clone(),
+        move || {
+            let game_state = Arc::clone(&game_state_for_spawns);
+            async move { game_state.tick_monster_spawns().await }
+        },
+    ));
 
     // Dungeon spawn-slot refill tick (respawns on occupied floors)
     let game_state_for_dungeons = Arc::clone(&game_state);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            guard_tick("dungeon refill", game_state_for_dungeons.tick_dungeons()).await;
-        }
-    });
+    background.spawn(run_ticks(
+        "dungeon refill",
+        Duration::from_secs(30),
+        drain_shutdown.clone(),
+        move || {
+            let game_state = Arc::clone(&game_state_for_dungeons);
+            async move { game_state.tick_dungeons().await }
+        },
+    ));
 
-    // Ground item despawn tick (every 30 seconds)
     let game_state_for_ground = Arc::clone(&game_state);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            guard_tick(
-                "ground item despawn",
-                game_state_for_ground.tick_ground_item_despawn(),
-            )
-            .await;
-        }
-    });
+    background.spawn(run_ticks(
+        "ground item despawn",
+        Duration::from_secs(30),
+        drain_shutdown.clone(),
+        move || {
+            let game_state = Arc::clone(&game_state_for_ground);
+            async move { game_state.tick_ground_item_despawn().await }
+        },
+    ));
 
     let game_state_for_time_sync = Arc::clone(&game_state);
     let auth_service_for_time_sync = Arc::clone(&auth_service);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(8));
-        let mut tick_count = 0u64;
-        loop {
-            interval.tick().await;
+    let mut tick_count = 0u64;
+    background.spawn(run_ticks(
+        "time sync",
+        Duration::from_secs(8),
+        drain_shutdown.clone(),
+        move || {
             tick_count = tick_count.wrapping_add(1);
-            guard_tick(
-                "time sync",
-                time_sync_tick(
-                    &game_state_for_time_sync,
-                    &auth_service_for_time_sync,
-                    tick_count,
-                ),
-            )
-            .await;
-        }
-    });
+            let game_state = Arc::clone(&game_state_for_time_sync);
+            let auth = Arc::clone(&auth_service_for_time_sync);
+            async move { time_sync_tick(&game_state, &auth, tick_count).await }
+        },
+    ));
 
     let addr = format!("0.0.0.0:{}", args.port);
     let listener = match TcpListener::bind(addr.as_str()).await {
@@ -401,43 +433,91 @@ async fn main() {
         ))
         .layer(CompressionLayer::new());
     let terrain_addr = format!("{}:{}", args.api_bind, terrain_port);
-    match TcpListener::bind(&terrain_addr).await {
+    let api_task = match TcpListener::bind(&terrain_addr).await {
         Ok(terrain_listener) => {
             info!("Terrain REST API listening on: {}", terrain_addr);
+            let api_shutdown = drain_shutdown.clone();
             tokio::spawn(async move {
-                if let Err(e) = axum::serve(terrain_listener, terrain_app).await {
+                if let Err(e) = axum::serve(terrain_listener, terrain_app)
+                    .with_graceful_shutdown(wait_for_shutdown(api_shutdown))
+                    .await
+                {
                     error!("Terrain API server error: {}", e);
                 }
-            });
+            })
         }
         Err(e) => {
             error!("Failed to bind terrain API to {}: {}", terrain_addr, e);
             return;
         }
-    }
+    };
 
     info!("🎮 MMORPG Server started successfully!");
     info!("📡 WebSocket server ready for connections");
     info!("🌐 Connect clients to: ws://{}", addr);
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                info!("New connection from: {}", addr);
-                let game_state_clone = Arc::clone(&game_state);
-                let auth_service_clone = Arc::clone(&auth_service);
-                let auth_ctx_clone = Arc::clone(&auth_ctx);
+    let mut connections = JoinSet::new();
+    let signal = shutdown_signal();
+    tokio::pin!(signal);
 
-                tokio::spawn(async move {
-                    handle_connection(stream, game_state_clone, auth_service_clone, auth_ctx_clone)
-                        .await;
-                });
+    let shutdown_notice_deadline = loop {
+        tokio::select! {
+            biased;
+            _ = &mut signal => {
+                info!("Shutdown signal received; draining server");
+                game_state
+                    .set_server_notice(Some(SHUTDOWN_NOTICE.to_string()))
+                    .await;
+                break Instant::now() + SHUTDOWN_NOTICE_DURATION;
             }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
+            result = listener.accept() => match result {
+                Ok((stream, addr)) => {
+                    info!("New connection from: {}", addr);
+                    let game_state_clone = Arc::clone(&game_state);
+                    let auth_service_clone = Arc::clone(&auth_service);
+                    let auth_ctx_clone = Arc::clone(&auth_ctx);
+                    let shutdown_started = drain_shutdown.clone();
+                    let shutdown = connection_shutdown.clone();
+
+                    connections.spawn(async move {
+                        handle_connection(
+                            stream,
+                            game_state_clone,
+                            auth_service_clone,
+                            auth_ctx_clone,
+                            shutdown_started,
+                            shutdown,
+                        )
+                        .await;
+                    });
+                }
+                Err(e) => error!("Failed to accept connection: {}", e),
+            },
+            result = connections.join_next(), if !connections.is_empty() => {
+                if let Some(Err(e)) = result {
+                    error!("Connection task failed: {}", e);
+                }
             }
         }
+    };
+
+    // Quiesce background writers, hold the notice for its full window, then
+    // stop all player mutations before taking the final snapshot.
+    drop(listener);
+    let _ = drain_shutdown_tx.send(());
+    drain(&mut background, "Background").await;
+    tokio::time::sleep_until(shutdown_notice_deadline).await;
+
+    let _ = connection_shutdown_tx.send(());
+    drain(&mut connections, "Connection").await;
+
+    game_state.persist_shutdown_snapshot(&auth_service).await;
+
+    if let Err(e) = api_task.await {
+        error!("Terrain API task failed during shutdown: {}", e);
     }
+
+    info!("Graceful shutdown complete");
 }
 
 #[cfg(test)]

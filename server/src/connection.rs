@@ -1,7 +1,7 @@
 use crate::auth::AuthService;
 use crate::game::character_attributes::roll_character_attributes;
 use crate::game::character_hp::{level_one_max_hp, DEFAULT_CHARACTER_RACE};
-use crate::game_state::GameState;
+use crate::game_state::{parse_notice_command, GameState};
 use crate::google_auth::GoogleAuthVerifier;
 use crate::types::{
     new_player, Character, CharacterAttributes, CharacterClass, ClientKind, ClientMessage,
@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use onlinerpg_shared::{deserialize_client_msg, serialize_server_msg};
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::{
     accept_async_with_config,
     tungstenite::{protocol::WebSocketConfig, Message},
@@ -158,12 +158,22 @@ pub async fn handle_connection(
     game_state: Arc<GameState>,
     auth_service: Arc<AuthService>,
     auth_ctx: Arc<AuthContext>,
+    shutdown_started: watch::Receiver<()>,
+    mut shutdown: watch::Receiver<()>,
 ) {
     let ws_config = WebSocketConfig::default()
         .max_message_size(Some(MAX_WS_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_WS_MESSAGE_BYTES))
         .read_buffer_size(WS_READ_BUFFER_BYTES);
-    let ws_stream = match accept_async_with_config(stream, Some(ws_config)).await {
+    let handshake = tokio::select! {
+        biased;
+        _ = shutdown.changed() => {
+            info!("Closing pending connection for server shutdown");
+            return;
+        }
+        result = accept_async_with_config(stream, Some(ws_config)) => result,
+    };
+    let ws_stream = match handshake {
         Ok(ws) => ws,
         Err(e) => {
             error!("WebSocket handshake failed: {}", e);
@@ -180,8 +190,22 @@ pub async fn handle_connection(
     let mut heartbeat_check = tokio::time::interval(std::time::Duration::from_secs(10));
     let mut unauth_message_count: u32 = 0;
 
+    // Built once and polled by reference: rebuilding it per iteration would
+    // re-register a waker on tokio's shared notify shards for every message.
+    let shutdown = async move {
+        let _ = shutdown.changed().await;
+    };
+    tokio::pin!(shutdown);
+
     loop {
         tokio::select! {
+            biased;
+
+            _ = &mut shutdown => {
+                info!("Closing connection for server shutdown");
+                break;
+            }
+
             // Periodic timeout checks: unauth grace period, in-game heartbeat
             _ = heartbeat_check.tick() => {
                 if state.account_name.is_none()
@@ -314,17 +338,20 @@ pub async fn handle_connection(
         }
     }
 
-    // Save full character state and inventory to DB before cleanup. A kick
-    // already flushed and detached the replaced session, so this is a no-op
-    // for that player id.
-    if let Some(ref id) = state.player_id {
-        game_state
-            .persist_and_detach_player(id, &auth_service)
-            .await;
+    // Once the drain starts, `persist_shutdown_snapshot` owns persistence for
+    // every connected player — and needs these maps left populated to see them.
+    // A kick already flushed and detached the replaced session, so this is a
+    // no-op for that player id.
+    if !shutdown_started.has_changed().unwrap_or(true) {
+        if let Some(ref id) = state.player_id {
+            game_state
+                .persist_and_detach_player(id, &auth_service)
+                .await;
 
-        game_state.unregister_direct_channel(id).await;
-        game_state.unregister_player_character(id).await;
-        game_state.remove_player(id).await;
+            game_state.unregister_direct_channel(id).await;
+            game_state.unregister_player_character(id).await;
+            game_state.remove_player(id).await;
+        }
     }
 
     info!("Connection handler finished");
@@ -379,7 +406,9 @@ fn requires_admin(msg: &ClientMessage) -> bool {
         | ClientMessage::DebugDropItem { .. }
         | ClientMessage::DebugSetTime { .. }
         | ClientMessage::DebugResetDungeonProps { .. } => true,
-        ClientMessage::ChatMessage { message } => message.starts_with("/give "),
+        ClientMessage::ChatMessage { message } => {
+            message.starts_with("/give ") || parse_notice_command(message).is_some()
+        }
         _ => false,
     }
 }
@@ -780,6 +809,12 @@ async fn handle_client_message(
             responses.push(ServerMessage::GoldUpdate {
                 gold: selected_character.gold,
             });
+
+            if let Some(notice) = game_state.server_notice().await {
+                responses.push(ServerMessage::ServerNotice {
+                    message: Some(notice),
+                });
+            }
 
             let rejoin_floor = player.floor_level;
             let rejoin_pos = player.position;
@@ -1378,6 +1413,12 @@ mod tests {
         }));
         assert!(requires_admin(&ClientMessage::ChatMessage {
             message: "/give sword".into()
+        }));
+        assert!(requires_admin(&ClientMessage::ChatMessage {
+            message: "/notice Server maintenance".into()
+        }));
+        assert!(requires_admin(&ClientMessage::ChatMessage {
+            message: "/notice".into()
         }));
         assert!(!requires_admin(&ClientMessage::ChatMessage {
             message: "hello".into()

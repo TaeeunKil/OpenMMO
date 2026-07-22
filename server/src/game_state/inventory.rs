@@ -49,7 +49,7 @@ fn consume_one(inv: &mut PlayerInventory, instance_id: u64) {
 
 /// Serialize a PlayerInventory into the flat row format used by AuthService
 /// persistence.
-fn serialize_inventory(inv: &PlayerInventory) -> Vec<ItemRow> {
+pub(super) fn serialize_inventory(inv: &PlayerInventory) -> Vec<ItemRow> {
     let mut rows: Vec<ItemRow> = inv
         .bag
         .iter()

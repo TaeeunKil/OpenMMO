@@ -20,7 +20,7 @@ use onlinerpg_shared::Position;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tracing::{error, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -57,6 +57,7 @@ pub type GameStateSender = broadcast::Sender<BroadcastMessage>;
 pub type GameStateReceiver = broadcast::Receiver<BroadcastMessage>;
 
 mod chat;
+pub(crate) use chat::parse_notice_command;
 mod combat;
 mod deals;
 pub(crate) use deals::band_invariant_holds;
@@ -113,6 +114,7 @@ pub struct GameState {
     player_spatial_cells: Arc<RwLock<HashMap<SpatialCell, HashSet<PlayerId>>>>,
     monsters: Arc<RwLock<HashMap<String, crate::types::Monster>>>,
     broadcast_tx: GameStateSender,
+    server_notice: Arc<RwLock<Option<String>>>,
     game_clock: Arc<std::sync::RwLock<GameClock>>,
     monster_defs: MonsterDefs,
     item_defs: ItemDefs,
@@ -131,6 +133,8 @@ pub struct GameState {
     dirty_players: Arc<RwLock<HashSet<PlayerId>>>,
     /// Players whose inventory has changed since the last periodic save.
     dirty_inventories: Arc<RwLock<HashSet<PlayerId>>>,
+    /// Serializes periodic and shutdown flushes against per-player logout saves.
+    persistence_lock: Arc<Mutex<()>>,
     /// In-memory set of currently open doors.
     open_doors: Arc<RwLock<HashSet<DoorKey>>>,
     /// Shared-crate passability cache mirroring what clients build (houses,
@@ -197,6 +201,7 @@ impl GameState {
             player_spatial_cells: Arc::new(RwLock::new(HashMap::new())),
             monsters: Arc::new(RwLock::new(HashMap::new())),
             broadcast_tx,
+            server_notice: Arc::new(RwLock::new(None)),
             game_clock: Arc::new(std::sync::RwLock::new(GameClock {
                 start_real: Instant::now(),
                 start_game_seconds: Self::datetime_to_total_game_seconds(&initial_datetime),
@@ -211,6 +216,7 @@ impl GameState {
             housing_io,
             dirty_players: Arc::new(RwLock::new(HashSet::new())),
             dirty_inventories: Arc::new(RwLock::new(HashSet::new())),
+            persistence_lock: Arc::new(Mutex::new(())),
             open_doors: Arc::new(RwLock::new(HashSet::new())),
             last_position_correction: Arc::new(RwLock::new(HashMap::new())),
             passability: Arc::new(std::sync::RwLock::new(
@@ -238,6 +244,15 @@ impl GameState {
 
     pub fn subscribe(&self) -> GameStateReceiver {
         self.broadcast_tx.subscribe()
+    }
+
+    pub async fn server_notice(&self) -> Option<String> {
+        self.server_notice.read().await.clone()
+    }
+
+    pub async fn set_server_notice(&self, message: Option<String>) {
+        *self.server_notice.write().await = message.clone();
+        self.broadcast(ServerMessage::ServerNotice { message });
     }
 
     pub(crate) fn broadcast(&self, msg: ServerMessage) {

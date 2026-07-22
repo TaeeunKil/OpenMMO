@@ -42,8 +42,30 @@ impl OnlineCounts {
     }
 }
 
+/// `/notice <message>` sets the server banner, bare `/notice` clears it.
+/// `requires_admin` gates the command through this same parser, so the syntax
+/// is defined once.
+pub(crate) fn parse_notice_command(message: &str) -> Option<Option<&str>> {
+    let rest = message.trim().strip_prefix("/notice")?;
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    Some(Some(rest.trim()).filter(|rest| !rest.is_empty()))
+}
+
 impl super::GameState {
     pub async fn send_chat_message(&self, player_id: &PlayerId, message: String) {
+        if let Some(notice) = parse_notice_command(&message) {
+            info!(
+                player = ?player_id,
+                cleared = notice.is_none(),
+                len = notice.map_or(0, str::len),
+                "server notice updated"
+            );
+            self.set_server_notice(notice.map(str::to_string)).await;
+            return;
+        }
+
         if message.trim() == "/escape" {
             self.escape_to_spawn(player_id).await;
             return;

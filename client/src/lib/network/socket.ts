@@ -2,7 +2,7 @@ import type { Position, PositionCorrection } from './networkTypes'
 import { hmrSingleton } from '../utils/hmr'
 import type { MonsterData } from '../types/Monster'
 import type { WallDirection } from '../utils/house-geometry'
-import { gameStore, resetGameStore } from '../stores/gameStore'
+import { gameStore, resetGameStore, serverNotice } from '../stores/gameStore'
 import { remotePlayerManager } from '../managers/remotePlayerManager'
 import { monsterManager } from '../managers/monsterManager'
 import {
@@ -132,6 +132,7 @@ class NetworkManager {
         if (this.socket?.readyState === WebSocket.OPEN) this.ensureHandshake()
       })
       gameStore.update((state) => ({ ...state, isConnected: true }))
+      serverNotice.set(null)
       clearServerGameTime()
       this.reconnectAttempts = 0
       if (this.reconnectTimer) {

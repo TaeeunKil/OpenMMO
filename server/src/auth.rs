@@ -187,6 +187,79 @@ impl From<rusqlite::Error> for AuthError {
 }
 
 impl AuthService {
+    fn write_character_states(
+        conn: &Connection,
+        data: &[CharacterSaveData],
+    ) -> Result<(), rusqlite::Error> {
+        let mut stmt = conn.prepare(
+            "UPDATE characters SET last_x = ?1, last_y = ?2, last_z = ?3, last_rotation = ?4, \
+             xp = ?5, level = ?6, max_hp = ?7, health = ?8, floor_level = ?9, gold = ?10 WHERE id = ?11",
+        )?;
+        for d in data {
+            stmt.execute(params![
+                f64::from(d.x),
+                f64::from(d.y),
+                f64::from(d.z),
+                f64::from(d.rotation),
+                d.xp as i64,
+                i64::from(d.level),
+                i64::from(d.max_hp),
+                i64::from(d.health),
+                i64::from(d.floor_level),
+                d.gold,
+                d.character_id,
+            ])?;
+        }
+        Ok(())
+    }
+
+    fn write_world_time(conn: &Connection, datetime: &GameDateTime) -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO world_time (id, year, month, day, hour, minute, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, strftime('%s', 'now'))
+             ON CONFLICT(id) DO UPDATE SET
+                year = excluded.year,
+                month = excluded.month,
+                day = excluded.day,
+                hour = excluded.hour,
+                minute = excluded.minute,
+                updated_at = excluded.updated_at",
+            params![
+                i64::from(datetime.year),
+                i64::from(datetime.month),
+                i64::from(datetime.day),
+                i64::from(datetime.hour),
+                i64::from(datetime.minute),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn replace_inventories<'a>(
+        conn: &Connection,
+        inventories: impl IntoIterator<Item = (i64, &'a [ItemRow])>,
+    ) -> Result<(), rusqlite::Error> {
+        let mut delete = conn.prepare("DELETE FROM character_items WHERE character_id = ?1")?;
+        let mut insert = conn.prepare(
+            "INSERT INTO character_items (character_id, item_def_id, quantity, equip_slot, enchant) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        for (character_id, items) in inventories {
+            delete.execute(params![character_id])?;
+            for item in items {
+                insert.execute(params![
+                    character_id,
+                    item.item_def_id,
+                    item.quantity,
+                    item.equip_slot,
+                    item.enchant
+                ])?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn default_db_path() -> PathBuf {
         PathBuf::from("data/game_data.db")
     }
@@ -275,6 +348,14 @@ impl AuthService {
             [],
         )?;
         Self::ensure_character_item_columns(conn)?;
+
+        // Every inventory read and every save's DELETE filters on character_id;
+        // without this SQLite full-scans the table once per character.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_character_items_character_id \
+             ON character_items(character_id)",
+            [],
+        )?;
 
         Ok(())
     }
@@ -672,32 +753,29 @@ impl AuthService {
         character.ok_or(AuthError::CharacterNotFound)
     }
 
-    pub fn save_characters_batch(&self, data: &[CharacterSaveData]) -> Result<(), AuthError> {
-        if data.is_empty() {
+    /// The one write path for game state: the periodic flush, a single player's
+    /// logout and the shutdown snapshot all land here. Everything goes in one
+    /// transaction, so a save costs one commit no matter how much it covers.
+    pub fn save_batch(
+        &self,
+        characters: &[CharacterSaveData],
+        inventories: &[(i64, Vec<ItemRow>)],
+        world_time: Option<&GameDateTime>,
+    ) -> Result<(), AuthError> {
+        if characters.is_empty() && inventories.is_empty() && world_time.is_none() {
             return Ok(());
         }
         let conn = self.open_connection()?;
         let tx = conn.unchecked_transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "UPDATE characters SET last_x = ?1, last_y = ?2, last_z = ?3, last_rotation = ?4, \
-                 xp = ?5, level = ?6, max_hp = ?7, health = ?8, floor_level = ?9, gold = ?10 WHERE id = ?11",
-            )?;
-            for d in data {
-                stmt.execute(params![
-                    f64::from(d.x),
-                    f64::from(d.y),
-                    f64::from(d.z),
-                    f64::from(d.rotation),
-                    d.xp as i64,
-                    i64::from(d.level),
-                    i64::from(d.max_hp),
-                    i64::from(d.health),
-                    i64::from(d.floor_level),
-                    d.gold,
-                    d.character_id,
-                ])?;
-            }
+        Self::write_character_states(&tx, characters)?;
+        Self::replace_inventories(
+            &tx,
+            inventories
+                .iter()
+                .map(|(id, items)| (*id, items.as_slice())),
+        )?;
+        if let Some(datetime) = world_time {
+            Self::write_world_time(&tx, datetime)?;
         }
         tx.commit()?;
         Ok(())
@@ -724,24 +802,7 @@ impl AuthService {
 
     pub fn save_world_time(&self, datetime: &GameDateTime) -> Result<(), AuthError> {
         let conn = self.open_connection()?;
-        conn.execute(
-            "INSERT INTO world_time (id, year, month, day, hour, minute, updated_at)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, strftime('%s', 'now'))
-             ON CONFLICT(id) DO UPDATE SET
-                year = excluded.year,
-                month = excluded.month,
-                day = excluded.day,
-                hour = excluded.hour,
-                minute = excluded.minute,
-                updated_at = excluded.updated_at",
-            params![
-                i64::from(datetime.year),
-                i64::from(datetime.month),
-                i64::from(datetime.day),
-                i64::from(datetime.hour),
-                i64::from(datetime.minute),
-            ],
-        )?;
+        Self::write_world_time(&conn, datetime)?;
         Ok(())
     }
 
@@ -762,36 +823,6 @@ impl AuthService {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
-    }
-
-    /// Save all items for a character, replacing existing data.
-    pub fn save_inventory(&self, character_id: i64, items: &[ItemRow]) -> Result<(), AuthError> {
-        let conn = self.open_connection()?;
-        let tx = conn.unchecked_transaction()?;
-
-        tx.execute(
-            "DELETE FROM character_items WHERE character_id = ?1",
-            params![character_id],
-        )?;
-
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO character_items (character_id, item_def_id, quantity, equip_slot, enchant) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for item in items {
-                stmt.execute(params![
-                    character_id,
-                    item.item_def_id,
-                    item.quantity,
-                    item.equip_slot,
-                    item.enchant
-                ])?;
-            }
-        }
-
-        tx.commit()?;
-        Ok(())
     }
 }
 

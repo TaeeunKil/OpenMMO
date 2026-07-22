@@ -498,6 +498,9 @@ pub enum ServerMessage {
         player_id: PlayerId,
         reason: String,
     },
+    ServerNotice {
+        message: Option<String>,
+    },
     PlayerTorchToggled {
         player_id: PlayerId,
         enabled: bool,

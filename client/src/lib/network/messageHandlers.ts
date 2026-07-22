@@ -7,6 +7,7 @@ import {
   addChatBubble,
   resetGameStore,
   isAdminUser,
+  serverNotice,
 } from '../stores/gameStore'
 import type { GameState, LocalPlayer, RemotePlayer } from '../stores/gameStore'
 import { Vector3 } from 'three'
@@ -612,6 +613,11 @@ export function handleServerMessage(
       monsterManager.reset()
       remotePlayerManager.reset()
       disconnect()
+      break
+    }
+
+    case 'ServerNotice': {
+      serverNotice.set(data.message ?? null)
       break
     }
 
