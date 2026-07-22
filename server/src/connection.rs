@@ -384,9 +384,12 @@ fn requires_admin(msg: &ClientMessage) -> bool {
     }
 }
 
-/// Where to point a refused client. Kept in the rejection text because that
-/// message is the only thing an outdated agent-client can still show.
-const CLIENT_UPDATE_HINT: &str = "update your client (https://github.com/Julian-adv/OnlineRPG)";
+/// What a refused client should do. Carried in the rejection text because that
+/// message is the only thing an out-of-date client can still show, and it has
+/// to serve both audiences: a browser holding a cached bundle (reload) and an
+/// agent-client binary on someone else's machine (download a new one).
+const CLIENT_UPDATE_HINT: &str =
+    "reload the page, or update agent-client (https://github.com/Julian-adv/OpenMMO)";
 
 /// Protocol handshake gate, run before every other message.
 ///
