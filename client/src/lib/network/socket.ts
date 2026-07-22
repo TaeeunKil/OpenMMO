@@ -54,6 +54,8 @@ class NetworkManager {
   private lastServerUrl: string = ''
   private lastCharacterId: number | null = null
   private wasmReady = false
+  /// Reset per socket: the handshake is per connection, not per session.
+  private handshakeSent = false
 
   // Events
   readonly respawnRequested = createEvent<() => void>()
@@ -117,15 +119,18 @@ class NetworkManager {
     }
 
     console.log('Attempting to connect to:', targetUrl)
+    this.handshakeSent = false
     this.socket = new WebSocket(targetUrl)
     this.socket.binaryType = 'arraybuffer'
 
     this.socket.onopen = () => {
       console.log('Connected to server')
-      // Mandatory first message: the server refuses everything else until it
-      // arrives, and refuses the connection when the version differs (a stale
-      // cached bundle gets a clear "reload" AuthError instead of odd failures).
-      void this.ensureWasm().then(() => this.sendClientInfo())
+      // Mandatory first message. Sending it here covers the idle case; the
+      // send path calls ensureHandshake() too, so a first message that races
+      // this callback still goes out second.
+      void this.ensureWasm().then(() => {
+        if (this.socket?.readyState === WebSocket.OPEN) this.ensureHandshake()
+      })
       gameStore.update((state) => ({ ...state, isConnected: true }))
       clearServerGameTime()
       this.reconnectAttempts = 0
@@ -220,6 +225,7 @@ class NetworkManager {
 
   private sendMessage(msg: ClientMessage) {
     if (this.socket?.readyState === WebSocket.OPEN && this.wasmReady) {
+      this.ensureHandshake()
       const bytes = serializeClientMessage(msg)
       this.socket.send(bytes)
     }
@@ -231,6 +237,7 @@ class NetworkManager {
 
   private sendAndSerialize(msg: ClientMessage): boolean {
     if (!this.isConnected()) return false
+    this.ensureHandshake()
     const bytes = serializeClientMessage(msg)
     this.socket!.send(bytes)
     return true
@@ -545,14 +552,21 @@ class NetworkManager {
 
   // --- Auth & character request methods ---
 
-  private sendClientInfo() {
-    this.sendMessage({
+  /// The server refuses every message that arrives before ClientInfo, so this
+  /// runs from the send path itself rather than from `onopen`: the open event
+  /// and the first send resolve as separate promise continuations, and losing
+  /// that race got the connection dropped.
+  private ensureHandshake() {
+    if (this.handshakeSent) return
+    this.handshakeSent = true
+    const bytes = serializeClientMessage({
       ClientInfo: {
         protocol_version: protocol_version(),
         client_kind: 'web',
         client_version: __APP_VERSION__,
       },
     })
+    this.socket!.send(bytes)
   }
 
   private authenticateWithGoogle(googleIdToken: string): boolean {
