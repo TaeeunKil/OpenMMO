@@ -24,7 +24,10 @@
     getWaterCaptureMaterial,
     type WaterFieldMaterialResult,
   } from '../../shaders/water-field-material'
-  import { waterHeightFallbackTex } from '../../shaders/water-types'
+  import {
+    waterHeightFallbackTex,
+    waterWetnessFallbackTex,
+  } from '../../shaders/water-types'
   import {
     createWetnessSystem,
     type WetnessResult,
@@ -205,6 +208,24 @@
     fieldTexMap.delete(id)
   }
 
+  function acquireWetness(
+    id: string,
+    tileX: number,
+    tileZ: number,
+    geometry: THREE.BufferGeometry
+  ) {
+    const pooled = wetnessPool.pop()
+    if (pooled) {
+      pooled.reposition(tileX, tileZ, geometry)
+      wetnessMap.set(id, pooled)
+    } else {
+      wetnessMap.set(
+        id,
+        createWetnessSystem(geometry, tileX, tileZ, TERRAIN_TILE_SIZE)
+      )
+    }
+  }
+
   function activateTile(
     id: string,
     tileX: number,
@@ -212,7 +233,8 @@
     field: WaterFieldTileData | null
   ) {
     if (!heightManager || matMap.has(id)) return
-    const hasWater = heightManager.hasWater(tileX, tileZ) || field !== null
+    const hasSea = heightManager.hasWater(tileX, tileZ)
+    const hasWater = hasSea || field !== null
     if (!hasWater) {
       noWaterSet.add(id)
       return
@@ -233,16 +255,11 @@
     if (refractionMap) u.uRefractionMap.value = refractionMap
     if (reflectionMap) u.uReflectionMap.value = reflectionMap
 
-    const pooledWetness = wetnessPool.pop()
-    if (pooledWetness) {
-      pooledWetness.reposition(tileX, tileZ, geometry)
-      wetnessMap.set(id, pooledWetness)
-    } else {
-      wetnessMap.set(
-        id,
-        createWetnessSystem(geometry, tileX, tileZ, TERRAIN_TILE_SIZE)
-      )
-    }
+    // Wetness only darkens wet sand along a shoreline. Rivers don't wet their
+    // banks — the capture material zeroes river influence outright — so a tile
+    // with no sea in it would spend two render passes every other frame
+    // producing an empty texture.
+    if (hasSea) acquireWetness(id, tileX, tileZ, geometry)
 
     const mesh = new THREE.Mesh(geometry, mat.material)
     mesh.position.set(tileX * TERRAIN_TILE_SIZE, 0, tileZ * TERRAIN_TILE_SIZE)
@@ -291,6 +308,18 @@
       ) {
         releaseTile(id)
         noWaterSet.add(id)
+        return
+      }
+      // An edit can also carry a river tile across sea level in either
+      // direction, and only sea-bearing tiles carry a wetness system.
+      const hasSea = heightManager.hasWater(tileX, tileZ)
+      const wetness = wetnessMap.get(id)
+      if (hasSea && !wetness) {
+        const geometry = geometryMap.get(id) ?? meshes.get(id)?.geometry
+        if (geometry) acquireWetness(id, tileX, tileZ, geometry)
+      } else if (!hasSea && wetness) {
+        wetnessMap.delete(id)
+        wetnessPool.push(wetness)
       }
     } else {
       // Not active — an edit may have dug below sea level.
@@ -378,7 +407,12 @@
       }
 
       const wetness = wetnessMap.get(id)
-      if (!wetness) continue
+      if (!wetness) {
+        // River-only tile. Materials are pooled, so without this it would keep
+        // sampling whichever tile's wetness target the material last held.
+        u.uWetnessMap.value = waterWetnessFallbackTex
+        continue
+      }
       // Capture + decay only every other frame (wetness changes slowly;
       // the decay formula uses actual dt so skipping frames is safe).
       if (doCapture) {
