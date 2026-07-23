@@ -75,6 +75,7 @@
     currentPlayerModel?: PlayerModel | null
     otherPlayerModels?: (PlayerModel | undefined)[]
     torchLightCastsShadow?: boolean
+    torchShadowMapSize?: number
     /** Per-frame provider of the current dungeon floor's wall-torch flame
      *  world-positions (empty when not underground). Pulled fresh each frame —
      *  the array is swapped on floor rebuild, so it must not be cached. */
@@ -109,6 +110,7 @@
     currentPlayerModel = $bindable<PlayerModel | null>(null),
     otherPlayerModels = $bindable<(PlayerModel | undefined)[]>([]),
     torchLightCastsShadow = true,
+    torchShadowMapSize = TORCH_SHADOW_MAP_SIZE,
     wallTorchPositions,
   }: Props = $props()
 
@@ -165,6 +167,17 @@
   // Svelte reactivity cannot track. The game loop runs every frame anyway,
   // so recomputing the target here has no extra cost.
   let unifiedTorchLight = $state<THREE.PointLight | undefined>(undefined)
+
+  // mapSize is only read when the cube map is allocated, so a quality switch
+  // mid-session needs the old map dropped for the new size to take effect.
+  $effect(() => {
+    const map = unifiedTorchLight?.shadow?.map
+    if (map && map.width !== torchShadowMapSize) {
+      map.dispose()
+      unifiedTorchLight!.shadow.map = null
+    }
+  })
+
   let unifiedTorchFlickerTime = 0
   const _unifiedTorchTmp = new THREE.Vector3()
   const _torchOffsetTmp = new THREE.Vector3()
@@ -475,8 +488,8 @@
       distance={TORCH_BASE_DISTANCE}
       decay={TORCH_BASE_DECAY}
       castShadow={torchLightCastsShadow}
-      shadow.mapSize.width={TORCH_SHADOW_MAP_SIZE}
-      shadow.mapSize.height={TORCH_SHADOW_MAP_SIZE}
+      shadow.mapSize.width={torchShadowMapSize}
+      shadow.mapSize.height={torchShadowMapSize}
       shadow.camera.near={1.5}
       shadow.camera.far={TORCH_SHADOW_FAR}
       shadow.bias={TORCH_SHADOW_BIAS}

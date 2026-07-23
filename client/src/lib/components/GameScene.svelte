@@ -1039,8 +1039,8 @@
     distance={50}
     decay={1.2}
     castShadow
-    shadow.mapSize.width={512}
-    shadow.mapSize.height={512}
+    shadow.mapSize.width={graphicsPreset.torchShadowMapSize}
+    shadow.mapSize.height={graphicsPreset.torchShadowMapSize}
     shadow.camera.near={0.5}
     shadow.camera.far={50}
   />
@@ -1166,6 +1166,7 @@
     {playerAttackDuration}
     torchEffectsDisabled={!graphicsPreset.enableTorchEffects}
     torchLightCastsShadow={graphicsPreset.enableTorchShadows}
+    torchShadowMapSize={graphicsPreset.torchShadowMapSize}
     wallTorchPositions={() => dungeonLayerRef?.getWallTorchPositions() ?? []}
     heightManager={terrainHeightManager}
     onStateChange={handlePlayerStateChange}

@@ -8,6 +8,7 @@ export interface GraphicsPreset {
   renderBudget: RenderBudget
   pixelRatioCap: number
   shadowMapSize: number
+  torchShadowMapSize: number
   antialias: boolean
   refraction: boolean
   reflection: boolean
@@ -41,11 +42,7 @@ const FULL_RENDER_SETTINGS = {
   enableWaterLayer: true,
   enableWaterEffects: true,
   enableGrassLayer: true,
-  grassCastsShadow: true,
   enableTreeLayer: true,
-  treeInstanceLimit: 1024,
-  treeCastsShadow: true,
-  enableWindParticles: true,
   enableHousingLayer: true,
   enableTorchEffects: true,
   enableTorchShadows: true,
@@ -57,15 +54,20 @@ const FULL_RENDER_SETTINGS = {
   warmupScenePipelines: true,
   worldMapDefaultZoomSpan: 8,
   worldMapMaxZoomSpan: 32,
-  worldMapImageCacheLimit: Infinity,
 } satisfies Omit<
   GraphicsPreset,
   | 'pixelRatioCap'
   | 'shadowMapSize'
+  | 'torchShadowMapSize'
   | 'antialias'
   | 'refraction'
   | 'reflection'
   | 'grassDensity'
+  | 'grassCastsShadow'
+  | 'treeInstanceLimit'
+  | 'treeCastsShadow'
+  | 'enableWindParticles'
+  | 'worldMapImageCacheLimit'
 >
 
 const PRESETS: Record<QualityLevel, GraphicsPreset> = {
@@ -73,28 +75,46 @@ const PRESETS: Record<QualityLevel, GraphicsPreset> = {
     ...FULL_RENDER_SETTINGS,
     pixelRatioCap: 2.0,
     shadowMapSize: 4096,
+    torchShadowMapSize: 1024,
     antialias: true,
     refraction: true,
     reflection: true,
     grassDensity: 1.0,
+    grassCastsShadow: true,
+    treeInstanceLimit: 1024,
+    treeCastsShadow: true,
+    enableWindParticles: true,
+    worldMapImageCacheLimit: Infinity,
   },
   medium: {
     ...FULL_RENDER_SETTINGS,
     pixelRatioCap: 1.5,
     shadowMapSize: 2048,
+    torchShadowMapSize: 512,
     antialias: false,
     refraction: true,
     reflection: true,
-    grassDensity: 1.0,
+    grassDensity: 0.7,
+    grassCastsShadow: false,
+    treeInstanceLimit: 768,
+    treeCastsShadow: true,
+    enableWindParticles: true,
+    worldMapImageCacheLimit: 256,
   },
   low: {
     ...FULL_RENDER_SETTINGS,
     pixelRatioCap: 1.0,
     shadowMapSize: 1024,
+    torchShadowMapSize: 256,
     antialias: false,
     refraction: false,
     reflection: false,
-    grassDensity: 0.5,
+    grassDensity: 0.4,
+    grassCastsShadow: false,
+    treeInstanceLimit: 512,
+    treeCastsShadow: false,
+    enableWindParticles: false,
+    worldMapImageCacheLimit: 128,
   },
 }
 
@@ -143,6 +163,7 @@ function getMobileSafePreset(preset: GraphicsPreset): GraphicsPreset {
     renderBudget: 'mobile',
     pixelRatioCap: Math.min(preset.pixelRatioCap, 0.75),
     shadowMapSize: Math.min(preset.shadowMapSize, 512),
+    torchShadowMapSize: 256,
     antialias: false,
     refraction: false,
     reflection: false,
