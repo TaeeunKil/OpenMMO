@@ -25,6 +25,12 @@ export interface MonsterDefinition {
   animHit: string
   animDie: string
   animDead: string
+  /**
+   * Extra metres applied after the corpse is auto-grounded on its lowest
+   * vertex; negative sinks it. Only needed when a dangling appendage pegs the
+   * offset and leaves the body hovering, as the kobold's tail does.
+   */
+  corpseGroundOffset?: number
   material?: string
   /**
    * When true (default), a killing blow plays the hit reaction before the death

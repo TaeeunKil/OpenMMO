@@ -37,14 +37,10 @@ function makeSkinned(localYs: number[], posedBoneY = 0): THREE.Group {
 const CLEARANCE = 0.01
 
 describe('computeCorpseGroundOffset', () => {
-  it('grounds the body and ignores a few outlier vertices', () => {
-    // Body at 0.30 m; one stray vertex dangling to -0.50 m (like a tail tip).
-    // A min-based offset would LIFT the body by +0.51; the percentile must
-    // instead DROP the body ~0.29 so it rests, letting the outlier go below.
-    const body = new Array(100).fill(0.3)
-    const root = makeSkinned([-0.5, ...body])
-    const offset = computeCorpseGroundOffset(root)
-    expect(offset).toBeCloseTo(-0.3 + CLEARANCE, 5)
+  it('grounds on the lowest vertex, wherever the body sits', () => {
+    // One vertex dangling to -0.50 m (like a tail tip) below a body at 0.30 m.
+    const root = makeSkinned([-0.5, ...new Array(100).fill(0.3)])
+    expect(computeCorpseGroundOffset(root)).toBeCloseTo(0.5 + CLEARANCE, 5)
   })
 
   it('rests a uniformly-raised corpse on the floor', () => {

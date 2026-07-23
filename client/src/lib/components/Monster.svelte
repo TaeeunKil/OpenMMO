@@ -297,13 +297,13 @@
           }
           if (finishedClipName === (def?.animDie ?? 'Die')) {
             isDeadAnimationFinished = true
-            // The death clip clamps here with the pelvis still raised, so the
-            // corpse would hover. Drop the model so its lowest point in this
-            // settled pose rests on the ground (these rigs have no foot bones,
-            // so the standing sole-offset can't be reused).
+            // The death clip clamps with the body still raised, so settle the
+            // corpse onto the ground.
             if (model && !deadGroundApplied) {
               deadGroundApplied = true
-              model.position.y = computeCorpseGroundOffset(model)
+              model.position.y +=
+                computeCorpseGroundOffset(model) +
+                (def?.corpseGroundOffset ?? 0)
             }
           }
         })

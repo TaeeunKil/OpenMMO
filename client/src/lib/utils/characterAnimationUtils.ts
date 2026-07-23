@@ -141,33 +141,20 @@ export function computeSoleGroundOffset(modelRoot: THREE.Object3D): number {
 
 /** Tiny gap (m) kept between a settled corpse and the floor. */
 const CORPSE_GROUND_CLEARANCE = 0.01
-/**
- * Fraction of skinned vertices allowed below the floor when grounding a corpse.
- * The contact height is this percentile of vertex heights, not the absolute
- * minimum. The Death01_Rig pose lands the body splayed with the limbs ~15cm up
- * and the tail dangling well below them, so keying off the lowest vertices (the
- * tail tip) leaves the whole body hovering. Grounding at ~8% instead rests the
- * splayed limbs and torso on the floor; the thin tail just clips through.
- * Verified on the kobold asset; tune if another monster over/under-sinks.
- */
-const CORPSE_CONTACT_PERCENTILE = 0.08
 
 /**
  * Y offset (metres) to add to `model` so the body of its CURRENT animated pose
- * rests on the floor (y = 0 in the model's own frame).
+ * rests on the floor. Call once the death clip has clamped on its final frame.
  *
  * Unlike computeSoleGroundOffset this scans every skinned vertex, not just
- * soles: a fallen corpse touches the ground with its back or flank, and the
- * AI-generated monster rigs have no foot/toe bones to key off. Measured in the
- * current pose, so call it once the death clip has clamped on its final frame —
- * the shared Death01_Rig clip leaves the body raised, so without this the
- * corpse floats. Uses a low percentile rather than the absolute lowest vertex
- * so a few stray verts don't leave the body hovering. Returns 0 for a model
- * with no skinned geometry.
+ * soles: a fallen corpse touches down with its back or flank, and the monster
+ * rigs have no foot/toe bones to key off. A monster whose lowest vertex is a
+ * dangling appendage ends up hovering on its body — nudge it with
+ * corpseGroundOffset in monsters.csv. Returns 0 with no skinned geometry.
  */
 export function computeCorpseGroundOffset(model: THREE.Object3D): number {
   model.updateMatrixWorld(true)
-  const heights: number[] = []
+  let lowest = Infinity
   const v = new THREE.Vector3()
 
   model.traverse((child) => {
@@ -180,15 +167,11 @@ export function computeCorpseGroundOffset(model: THREE.Object3D): number {
       child.applyBoneTransform(i, v) // skinned position in the current pose
       child.localToWorld(v)
       model.worldToLocal(v) // → model-local, independent of model.position
-      heights.push(v.y)
+      if (v.y < lowest) lowest = v.y
     }
   })
 
-  if (heights.length === 0) return 0
-  heights.sort((a, b) => a - b)
-  const contact =
-    heights[Math.floor(CORPSE_CONTACT_PERCENTILE * heights.length)]
-  return -contact + CORPSE_GROUND_CLEARANCE
+  return Number.isFinite(lowest) ? -lowest + CORPSE_GROUND_CLEARANCE : 0
 }
 
 function findPrimarySkinnedMesh(
